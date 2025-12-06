@@ -362,11 +362,33 @@ try {
       });
     }
     
-    // Sync menu
+    // Sync menu - preserve category filter
     loadMenu().then((menuData) => {
-      if (JSON.stringify(state.menu.map(m => m.id)) !== JSON.stringify(menuData.map(m => m.id))) {
+      const currentMenuIds = JSON.stringify(state.menu.map(m => m.id));
+      const newMenuIds = JSON.stringify(menuData.map(m => m.id));
+      
+      if (currentMenuIds !== newMenuIds) {
+        // Preserve category filter selection before rendering
+        const preservedCategory = els.menuCategoryFilter?.value || "";
         state.menu = menuData;
         renderMenu();
+        
+        // Restore category filter after a brief delay to ensure DOM is updated
+        if (preservedCategory && els.menuCategoryFilter) {
+          setTimeout(() => {
+            if (els.menuCategoryFilter) {
+              // Check if the category still exists
+              const optionExists = Array.from(els.menuCategoryFilter.options).some(
+                opt => opt.value === preservedCategory
+              );
+              if (optionExists) {
+                els.menuCategoryFilter.value = preservedCategory;
+                // Re-apply filter
+                filterMenu(els.menuSearch?.value || "", preservedCategory);
+              }
+            }
+          }, 100);
+        }
       }
     }).catch(err => {
       console.warn("Periodic menu sync failed:", err);
@@ -730,9 +752,11 @@ if (els.reservationForm) {
     // Save locally first (immediate)
     await saveReservation(reservation);
 
-    // Refresh admin reservations list if admin modal is open
+    // Refresh admin reservations list if admin modal is open - use requestAnimationFrame to prevent flickering
     if (isAdmin() && els.adminReservationsModal && !els.adminReservationsModal.classList.contains("hidden")) {
-      await renderAdminReservations();
+      requestAnimationFrame(() => {
+        renderAdminReservations();
+      });
     }
 
     if (els.reservationMessage) {
@@ -928,17 +952,35 @@ async function renderMenu() {
     const categories = [...new Set(state.menu.map(item => item.category).filter(Boolean))];
     categories.sort(); // Sort alphabetically
     
-    els.menuCategoryFilter.innerHTML = '<option value="">All Categories</option>';
-    categories.forEach(cat => {
-      const option = document.createElement("option");
-      option.value = cat;
-      option.textContent = cat;
-      els.menuCategoryFilter.appendChild(option);
-    });
-    
-    // Restore previous selection if it still exists
-    if (currentValue && categories.includes(currentValue)) {
-      els.menuCategoryFilter.value = currentValue;
+    // Only update if filter is not locked (user is actively using it)
+    if (!categoryFilterLocked) {
+      els.menuCategoryFilter.innerHTML = '<option value="">All Categories</option>';
+      categories.forEach(cat => {
+        const option = document.createElement("option");
+        option.value = cat;
+        option.textContent = cat;
+        els.menuCategoryFilter.appendChild(option);
+      });
+      
+      // Restore previous selection if it still exists
+      if (currentValue && categories.includes(currentValue)) {
+        els.menuCategoryFilter.value = currentValue;
+        // Re-apply filter
+        filterMenu(els.menuSearch?.value || "", currentValue);
+      }
+    } else {
+      // Filter is locked, just ensure the selected option exists
+      const optionExists = Array.from(els.menuCategoryFilter.options).some(
+        opt => opt.value === currentValue
+      );
+      if (!optionExists && currentValue) {
+        // Option doesn't exist, add it
+        const option = document.createElement("option");
+        option.value = currentValue;
+        option.textContent = currentValue;
+        els.menuCategoryFilter.appendChild(option);
+        els.menuCategoryFilter.value = currentValue;
+      }
     }
   }
 }
@@ -1225,9 +1267,11 @@ async function loadReservations() {
       // Update localStorage with merged data
       localStorage.setItem(STORAGE_KEYS.RESERVATIONS, JSON.stringify(merged));
       
-      // Refresh admin view if open
+      // Refresh admin view if open - use requestAnimationFrame to prevent flickering
       if (isAdmin() && els.adminReservationsModal && !els.adminReservationsModal.classList.contains("hidden")) {
-        renderAdminReservations();
+        requestAnimationFrame(() => {
+          renderAdminReservations();
+        });
       }
     }
   }).catch(err => {
@@ -1281,9 +1325,11 @@ async function saveReservation(reservation) {
     // After successful backend save, refresh from backend to get server confirmation
     setTimeout(() => {
       loadReservations().then(() => {
-        // Refresh admin view if it's open
+        // Refresh admin view if it's open - use requestAnimationFrame to prevent flickering
         if (isAdmin() && els.adminReservationsModal && !els.adminReservationsModal.classList.contains("hidden")) {
-          renderAdminReservations();
+          requestAnimationFrame(() => {
+            renderAdminReservations();
+          });
         }
       });
     }, 500);
@@ -1364,8 +1410,10 @@ async function updateReservationStatus(id, status) {
     console.warn("Backend status update error:", err);
   });
   
-  // Refresh the view
-  await renderAdminReservations();
+  // Refresh the view - use requestAnimationFrame to prevent flickering
+  requestAnimationFrame(() => {
+    renderAdminReservations();
+  });
 }
 
 async function deleteReservation(id) {
@@ -1396,9 +1444,14 @@ async function deleteReservation(id) {
     console.warn("Backend deletion error:", err);
   });
   
-  // Refresh the view
-  await renderAdminReservations();
+  // Refresh the view - use requestAnimationFrame to prevent flickering
+  requestAnimationFrame(() => {
+    renderAdminReservations();
+  });
 }
+
+// Track last rendered reservations to prevent unnecessary re-renders
+let lastRenderedReservations = null;
 
 async function renderAdminReservations() {
   if (!els.adminReservationsList) return;
@@ -1418,7 +1471,15 @@ async function renderAdminReservations() {
     }
   }
 
-  // Trigger background sync from backend (non-blocking)
+  // Check if data actually changed to prevent unnecessary re-renders
+  const reservationsKey = JSON.stringify(reservations.map(r => ({ id: r.id, status: r.status })));
+  if (lastRenderedReservations === reservationsKey) {
+    // Data hasn't changed, skip re-render to prevent flickering
+    return;
+  }
+  lastRenderedReservations = reservationsKey;
+
+  // Trigger background sync from backend (non-blocking, but don't re-render immediately)
   loadReservations().catch(err => {
     console.warn("Background reservation sync failed:", err);
   });
@@ -1548,21 +1609,38 @@ async function openAdminReservationsModal() {
   if (!els.adminReservationsModal) return;
   // Refresh data before opening
   await loadReservations();
-  await renderAdminReservations();
+  // Reset last rendered state to force initial render
+  lastRenderedReservations = null;
+  renderAdminReservations();
   els.adminReservationsModal.classList.remove("hidden");
   
   // Set up periodic refresh while modal is open (every 3 seconds)
+  // Clear any existing interval
   if (window.adminReservationsRefreshInterval) {
     clearInterval(window.adminReservationsRefreshInterval);
+    window.adminReservationsRefreshInterval = null;
   }
+  
+  // Only refresh if modal is open, and use a longer interval to prevent flickering
+  // Also use debouncing to prevent rapid re-renders
+  let isRendering = false;
   window.adminReservationsRefreshInterval = setInterval(() => {
     if (els.adminReservationsModal && !els.adminReservationsModal.classList.contains("hidden")) {
-      renderAdminReservations();
+      // Prevent concurrent renders
+      if (!isRendering) {
+        isRendering = true;
+        // Only refresh data, don't force re-render if nothing changed
+        loadReservations().then(() => {
+          isRendering = false;
+        }).catch(() => {
+          isRendering = false;
+        });
+      }
     } else {
       clearInterval(window.adminReservationsRefreshInterval);
       window.adminReservationsRefreshInterval = null;
     }
-  }, 3000);
+  }, 10000); // Increased to 10 seconds to reduce flickering
 }
 
 function closeAdminReservationsModal() {
@@ -2029,9 +2107,19 @@ if (els.menuSearch) {
   });
 }
 
+// Track category filter to prevent accidental resets
+let categoryFilterLocked = false;
+
 if (els.menuCategoryFilter) {
   els.menuCategoryFilter.addEventListener("change", (e) => {
-    filterMenu(els.menuSearch?.value || "", e.target.value);
+    const selectedCategory = e.target.value;
+    filterMenu(els.menuSearch?.value || "", selectedCategory);
+    // Lock the filter to prevent it from being reset
+    categoryFilterLocked = true;
+    // Unlock after a short delay to allow normal updates
+    setTimeout(() => {
+      categoryFilterLocked = false;
+    }, 2000);
   });
 }
 
