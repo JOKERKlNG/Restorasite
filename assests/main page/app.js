@@ -621,8 +621,26 @@ if (els.reviewForm) {
       }
     }
     
-    // Add new review
-    reviews.push(reviewData);
+    // Check if review already exists (prevent duplicates)
+    const existingIndex = reviews.findIndex(r => r.id === reviewData.id);
+    if (existingIndex === -1) {
+      // Add new review only if it doesn't exist
+      reviews.push(reviewData);
+    } else {
+      // Update existing review
+      reviews[existingIndex] = reviewData;
+    }
+    
+    // Deduplicate by ID before saving
+    const seenIds = new Set();
+    const uniqueReviews = [];
+    reviews.forEach(review => {
+      if (review.id && !seenIds.has(review.id)) {
+        seenIds.add(review.id);
+        uniqueReviews.push(review);
+      }
+    });
+    reviews = uniqueReviews;
     
     // Save immediately to localStorage (reliable storage)
     try {
@@ -641,6 +659,12 @@ if (els.reviewForm) {
       rating: reviewData.rating,
       reviewerName: reviewData.reviewerName,
       text: reviewData.text,
+    }).then(() => {
+      // After successful sync, reload reviews to ensure consistency
+      // Use a small delay to prevent immediate duplicate rendering
+      setTimeout(() => {
+        loadReviews();
+      }, 500);
     }).catch(err => {
       console.warn("Background sync failed, but review is saved locally:", err);
     });
@@ -1742,35 +1766,53 @@ async function loadReviews() {
         });
         
         // Backend is source of truth - use it to sync deletions
-        // Create a map of backend review IDs
+        // Create a map of backend review IDs for quick lookup
         const backendIds = new Set(backendReviews.map(r => r.id));
+        const backendMap = new Map(backendReviews.map(r => [r.id, r]));
         
         // Start with backend reviews (authoritative)
         const merged = [...backendReviews];
         
         // Add any local reviews that don't exist in backend (pending sync)
+        // Use a Set to track IDs we've already added to prevent duplicates
+        const mergedIds = new Set(merged.map(r => r.id));
+        
         local.forEach(localReview => {
-          if (!backendIds.has(localReview.id)) {
-            // This review exists locally but not in backend - might be pending sync
-            // Only keep if it's very recent (within last 5 seconds) - might be pending
-            const isRecent = localReview.timestamp && (Date.now() - localReview.timestamp < 5000);
-            if (isRecent) {
-              merged.push(localReview);
+          // Only add if it doesn't exist in merged array (prevent duplicates)
+          if (!mergedIds.has(localReview.id)) {
+            if (!backendIds.has(localReview.id)) {
+              // This review exists locally but not in backend - might be pending sync
+              // Only keep if it's very recent (within last 5 seconds) - might be pending
+              const isRecent = localReview.timestamp && (Date.now() - localReview.timestamp < 5000);
+              if (isRecent) {
+                merged.push(localReview);
+                mergedIds.add(localReview.id);
+              }
             }
           }
         });
         
+        // Final deduplication by ID (in case of any edge cases)
+        const uniqueReviews = [];
+        const seenIds = new Set();
+        merged.forEach(review => {
+          if (!seenIds.has(review.id)) {
+            seenIds.add(review.id);
+            uniqueReviews.push(review);
+          }
+        });
+        
         // Sort by timestamp
-        merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        uniqueReviews.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         
         // Check if data actually changed before updating (compare full data, not just IDs)
         const currentData = JSON.stringify(local.map(r => ({ id: r.id, timestamp: r.timestamp })).sort((a, b) => a.id.localeCompare(b.id)));
-        const newData = JSON.stringify(merged.map(r => ({ id: r.id, timestamp: r.timestamp })).sort((a, b) => a.id.localeCompare(b.id)));
+        const newData = JSON.stringify(uniqueReviews.map(r => ({ id: r.id, timestamp: r.timestamp })).sort((a, b) => a.id.localeCompare(b.id)));
         const dataChanged = currentData !== newData;
         
         if (dataChanged) {
           // Only update localStorage if data actually changed
-          localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(merged));
+          localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(uniqueReviews));
           
           // Only re-render if not already rendering and data actually changed (prevents flickering)
           if (!state.isRenderingReviews) {
@@ -1822,10 +1864,11 @@ async function saveReviews(reviews) {
       console.log("Review synced to backend successfully");
       // After successful sync, refresh from backend to get any updates
       // Clear cache to force re-render
+      // Use a longer delay to prevent immediate duplicate rendering
       state.lastRenderedReviews = null;
       setTimeout(() => {
         loadReviews();
-      }, 300);
+      }, 800);
     }).catch(err => {
       console.warn("Background backend sync failed (review is still saved locally):", err);
     });
@@ -1855,6 +1898,17 @@ async function renderReviews() {
         reviews = [];
       }
     }
+    
+    // Deduplicate by ID before rendering (prevent duplicates)
+    const seenIds = new Set();
+    const uniqueReviews = [];
+    reviews.forEach(review => {
+      if (review.id && !seenIds.has(review.id)) {
+        seenIds.add(review.id);
+        uniqueReviews.push(review);
+      }
+    });
+    reviews = uniqueReviews;
     
     // Sort reviews by timestamp
     reviews.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
