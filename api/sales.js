@@ -29,12 +29,27 @@ module.exports = async (req, res) => {
       const uniqueOrders = new Set(sales.map(s => s.order_id).filter(Boolean));
       const totalOrders = uniqueOrders.size;
       
-      // Top items
+      // Calculate total items ordered
+      const totalItemsOrdered = sales.reduce((sum, s) => sum + (s.quantity || 0), 0);
+      
+      // Calculate average order value
+      const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+      
+      // Get all orders to calculate additional stats
+      const orders = await db.getOrders();
+      const ordersInPeriod = orders.filter(o => o.created_at >= startDate);
+      
+      // Top items by sales
       const itemMap = new Map();
       sales.forEach(sale => {
         const key = sale.item_id || sale.item_name;
         if (!itemMap.has(key)) {
-          itemMap.set(key, { name: sale.item_name, quantity: 0, revenue: 0 });
+          itemMap.set(key, { 
+            name: sale.item_name, 
+            quantity: 0, 
+            revenue: 0,
+            item_id: sale.item_id 
+          });
         }
         const item = itemMap.get(key);
         item.quantity += sale.quantity || 0;
@@ -43,6 +58,39 @@ module.exports = async (req, res) => {
       
       const topItems = Array.from(itemMap.values())
         .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10);
+      
+      // Get top rated items from reviews
+      const reviews = await db.getReviews();
+      const itemRatingMap = new Map();
+      
+      reviews.forEach(review => {
+        const itemId = review.item_id;
+        const itemName = review.item_name || 'Unknown';
+        if (!itemRatingMap.has(itemId)) {
+          itemRatingMap.set(itemId, {
+            item_id: itemId,
+            name: itemName,
+            totalRating: 0,
+            reviewCount: 0,
+            averageRating: 0
+          });
+        }
+        const item = itemRatingMap.get(itemId);
+        item.totalRating += review.rating || 0;
+        item.reviewCount += 1;
+        item.averageRating = item.totalRating / item.reviewCount;
+      });
+      
+      const topRatedItems = Array.from(itemRatingMap.values())
+        .filter(item => item.reviewCount > 0)
+        .sort((a, b) => {
+          // Sort by average rating first, then by number of reviews
+          if (Math.abs(b.averageRating - a.averageRating) > 0.1) {
+            return b.averageRating - a.averageRating;
+          }
+          return b.reviewCount - a.reviewCount;
+        })
         .slice(0, 10);
       
       // Daily revenue
@@ -64,7 +112,10 @@ module.exports = async (req, res) => {
         period,
         totalRevenue,
         totalOrders,
+        totalItemsOrdered,
+        averageOrderValue,
         topItems,
+        topRatedItems,
         dailyRevenue,
       });
     }

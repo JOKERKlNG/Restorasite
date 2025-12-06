@@ -236,8 +236,11 @@ const els = {
   closeAnalyticsModalBtn: document.querySelector("#closeAnalyticsModalBtn"),
   totalRevenue: document.querySelector("#totalRevenue"),
   totalOrders: document.querySelector("#totalOrders"),
+  totalItemsOrdered: document.querySelector("#totalItemsOrdered"),
+  averageOrderValue: document.querySelector("#averageOrderValue"),
   topItem: document.querySelector("#topItem"),
   topItemsList: document.querySelector("#topItemsList"),
+  topRatedItemsList: document.querySelector("#topRatedItemsList"),
 };
 
 const printRoot = document.createElement("div");
@@ -2206,7 +2209,7 @@ function renderOrderHistory(orders) {
           </div>
           <div class="order-header-right">
             <strong class="order-total">${formatCurrency(total)}</strong>
-            <span class="order-status status-${order.status || 'pending'}">${(order.status || 'pending').toUpperCase()}</span>
+            <span class="order-status status-${order.status || 'ordered'}">${(order.status || 'ordered').toUpperCase()}</span>
           </div>
         </header>
         <div class="order-items">
@@ -2247,19 +2250,68 @@ if (els.analyticsModal) {
 async function openAnalyticsModal() {
   if (!els.analyticsModal) return;
   
+  // Show loading state
+  if (els.totalRevenue) els.totalRevenue.textContent = "Loading...";
+  if (els.totalOrders) els.totalOrders.textContent = "Loading...";
+  if (els.totalItemsOrdered) els.totalItemsOrdered.textContent = "Loading...";
+  if (els.averageOrderValue) els.averageOrderValue.textContent = "Loading...";
+  if (els.topItem) els.topItem.textContent = "Loading...";
+  if (els.topItemsList) els.topItemsList.innerHTML = '<p class="loading">Loading analytics...</p>';
+  if (els.topRatedItemsList) els.topRatedItemsList.innerHTML = '<p class="loading">Loading analytics...</p>';
+  
+  els.analyticsModal.classList.remove("hidden");
+  
   try {
     const analytics = await apiGet("/sales/analytics?period=30", () => ({
       totalRevenue: 0,
       totalOrders: 0,
+      totalItemsOrdered: 0,
+      averageOrderValue: 0,
       topItems: [],
+      topRatedItems: [],
       dailyRevenue: [],
     }));
     
-    renderAnalytics(analytics);
-    els.analyticsModal.classList.remove("hidden");
+    if (analytics) {
+      renderAnalytics(analytics);
+      
+      // Show message if no data
+      if ((analytics.totalRevenue || 0) === 0 && (analytics.totalOrders || 0) === 0) {
+        if (els.topItemsList) {
+          els.topItemsList.innerHTML = '<p class="empty-state">No sales data yet. Analytics will appear here once customers start placing orders.</p>';
+        }
+        if (els.topRatedItemsList) {
+          els.topRatedItemsList.innerHTML = '<p class="empty-state">No ratings yet. Top rated items will appear here once customers start reviewing.</p>';
+        }
+      }
+    } else {
+      renderAnalytics({ 
+        totalRevenue: 0, 
+        totalOrders: 0, 
+        totalItemsOrdered: 0,
+        averageOrderValue: 0,
+        topItems: [], 
+        topRatedItems: [],
+        dailyRevenue: [] 
+      });
+    }
   } catch (err) {
     console.error("Error loading analytics:", err);
-    alert("Failed to load analytics. Please try again.");
+    renderAnalytics({ 
+      totalRevenue: 0, 
+      totalOrders: 0, 
+      totalItemsOrdered: 0,
+      averageOrderValue: 0,
+      topItems: [], 
+      topRatedItems: [],
+      dailyRevenue: [] 
+    });
+    if (els.topItemsList) {
+      els.topItemsList.innerHTML = '<p class="error-state">Failed to load analytics. Please try again later.</p>';
+    }
+    if (els.topRatedItemsList) {
+      els.topRatedItemsList.innerHTML = '<p class="error-state">Failed to load ratings. Please try again later.</p>';
+    }
   }
 }
 
@@ -2274,7 +2326,10 @@ function renderAnalytics(data) {
     data = {
       totalRevenue: 0,
       totalOrders: 0,
+      totalItemsOrdered: 0,
+      averageOrderValue: 0,
       topItems: [],
+      topRatedItems: [],
       dailyRevenue: [],
     };
   }
@@ -2285,6 +2340,14 @@ function renderAnalytics(data) {
   
   if (els.totalOrders) {
     els.totalOrders.textContent = (data.totalOrders || 0).toLocaleString();
+  }
+  
+  if (els.totalItemsOrdered) {
+    els.totalItemsOrdered.textContent = (data.totalItemsOrdered || 0).toLocaleString();
+  }
+  
+  if (els.averageOrderValue) {
+    els.averageOrderValue.textContent = formatCurrency(data.averageOrderValue || 0);
   }
   
   if (els.topItem) {
@@ -2308,6 +2371,24 @@ function renderAnalytics(data) {
           <span class="item-revenue">${formatCurrency(item.revenue || 0)}</span>
         </div>
       `).join("");
+    }
+  }
+  
+  // Render top rated items
+  if (els.topRatedItemsList) {
+    if (!data.topRatedItems || data.topRatedItems.length === 0) {
+      els.topRatedItemsList.innerHTML = '<p class="empty-state">No ratings yet. Top rated items will appear here once customers start reviewing.</p>';
+    } else {
+      els.topRatedItemsList.innerHTML = data.topRatedItems.map((item, index) => {
+        const stars = '⭐'.repeat(Math.round(item.averageRating || 0));
+        return `
+        <div class="top-item-row">
+          <span class="rank">#${index + 1}</span>
+          <span class="item-name">${escapeHtml(item.name || 'Unknown')}</span>
+          <span class="item-quantity">${stars} ${(item.averageRating || 0).toFixed(1)} (${item.reviewCount || 0} reviews)</span>
+        </div>
+      `;
+      }).join("");
     }
   }
 }

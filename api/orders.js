@@ -103,7 +103,7 @@ module.exports = async (req, res) => {
         subtotal,
         tax: tax || 0,
         total,
-        status: "pending",
+        status: "ordered", // Changed from "pending" to "ordered"
         payment_method: paymentMethod || null,
         created_at: now,
         updated_at: now,
