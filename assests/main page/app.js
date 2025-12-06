@@ -150,6 +150,7 @@ const state = {
   editingId: null,
   lastRenderedReviews: null, // Cache to prevent unnecessary re-renders
   isRenderingReviews: false, // Flag to prevent concurrent renders
+  isSyncingReviews: false, // Flag to prevent rendering during sync
 };
 
 const els = {
@@ -652,28 +653,49 @@ if (els.reviewForm) {
       return;
     }
     
+    // Clear cache before rendering
+    state.lastRenderedReviews = null;
+    
+    // Render immediately with local data
+    renderReviews();
+    renderMenu(); // Update menu to show new ratings
+    closeReviewModal();
+    
     // Sync to backend in background (non-blocking)
+    // Don't reload immediately to prevent duplicate rendering
     apiPost("/reviews", {
       itemId: reviewData.itemId,
       itemName: reviewData.itemName,
       rating: reviewData.rating,
       reviewerName: reviewData.reviewerName,
       text: reviewData.text,
-    }).then(() => {
-      // After successful sync, reload reviews to ensure consistency
-      // Use a small delay to prevent immediate duplicate rendering
+    }).then((savedReview) => {
+      // If backend returns a review with different ID, update local storage
+      if (savedReview && savedReview.id && savedReview.id !== reviewData.id) {
+        // Update the review ID in localStorage
+        const saved = localStorage.getItem(STORAGE_KEYS.REVIEWS);
+        if (saved) {
+          try {
+            const reviews = JSON.parse(saved) || [];
+            const index = reviews.findIndex(r => r.id === reviewData.id);
+            if (index !== -1) {
+              reviews[index] = { ...reviews[index], ...savedReview, itemName: reviewData.itemName };
+              localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(reviews));
+            }
+          } catch (e) {
+            console.error("Failed to update review ID:", e);
+          }
+        }
+      }
+      
+      // Only reload after a longer delay to prevent duplicate rendering
+      // The review is already displayed from local storage
       setTimeout(() => {
         loadReviews();
-      }, 500);
+      }, 1500);
     }).catch(err => {
       console.warn("Background sync failed, but review is saved locally:", err);
     });
-    
-    // Clear cache and update UI immediately
-    state.lastRenderedReviews = null;
-    renderReviews();
-    renderMenu(); // Update menu to show new ratings
-    closeReviewModal();
   });
 } else {
   console.warn("Review form not found");
@@ -1752,6 +1774,7 @@ async function loadReviews() {
   
   window.reviewSyncTimeout = setTimeout(() => {
     window.reviewSyncTimeout = null;
+    state.isSyncingReviews = true; // Set flag to prevent rendering during sync
     apiGet("/reviews", () => null).then((backendReviews) => {
       if (Array.isArray(backendReviews)) {
         // Ensure backend reviews have itemName - if missing, try to get from menu
@@ -1770,33 +1793,38 @@ async function loadReviews() {
         const backendIds = new Set(backendReviews.map(r => r.id));
         const backendMap = new Map(backendReviews.map(r => [r.id, r]));
         
-        // Start with backend reviews (authoritative)
+        // Create a map of local reviews by ID for quick lookup
+        const localMap = new Map(local.map(r => [r.id, r]));
+        
+        // Start with backend reviews (authoritative - these take priority)
         const merged = [...backendReviews];
         
-        // Add any local reviews that don't exist in backend (pending sync)
-        // Use a Set to track IDs we've already added to prevent duplicates
+        // Create a Set to track all IDs we've added (prevent duplicates)
         const mergedIds = new Set(merged.map(r => r.id));
         
+        // Add any local reviews that don't exist in backend (pending sync)
+        // Only add very recent local reviews that haven't been synced yet
         local.forEach(localReview => {
-          // Only add if it doesn't exist in merged array (prevent duplicates)
-          if (!mergedIds.has(localReview.id)) {
-            if (!backendIds.has(localReview.id)) {
-              // This review exists locally but not in backend - might be pending sync
-              // Only keep if it's very recent (within last 5 seconds) - might be pending
-              const isRecent = localReview.timestamp && (Date.now() - localReview.timestamp < 5000);
-              if (isRecent) {
-                merged.push(localReview);
-                mergedIds.add(localReview.id);
-              }
+          // Skip if already in merged (prevents duplicates)
+          if (mergedIds.has(localReview.id)) {
+            return;
+          }
+          
+          // If review doesn't exist in backend, check if it's recent (pending sync)
+          if (!backendIds.has(localReview.id)) {
+            const isRecent = localReview.timestamp && (Date.now() - localReview.timestamp < 10000);
+            if (isRecent) {
+              merged.push(localReview);
+              mergedIds.add(localReview.id);
             }
           }
         });
         
-        // Final deduplication by ID (in case of any edge cases)
+        // Final deduplication by ID (critical - prevents any duplicates)
         const uniqueReviews = [];
         const seenIds = new Set();
         merged.forEach(review => {
-          if (!seenIds.has(review.id)) {
+          if (review.id && !seenIds.has(review.id)) {
             seenIds.add(review.id);
             uniqueReviews.push(review);
           }
@@ -1815,20 +1843,31 @@ async function loadReviews() {
           localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(uniqueReviews));
           
           // Only re-render if not already rendering and data actually changed (prevents flickering)
+          // Add a small delay to prevent rapid re-renders
           if (!state.isRenderingReviews) {
-            // Use requestAnimationFrame to batch DOM updates
-            requestAnimationFrame(() => {
+            setTimeout(() => {
+              state.isSyncingReviews = false; // Clear sync flag
               if (!state.isRenderingReviews) {
-                renderReviews();
-                renderMenu();
+                // Use requestAnimationFrame to batch DOM updates
+                requestAnimationFrame(() => {
+                  if (!state.isRenderingReviews) {
+                    renderReviews();
+                    renderMenu();
+                  }
+                });
               }
-            });
+            }, 200);
+          } else {
+            state.isSyncingReviews = false; // Clear sync flag even if not rendering
           }
+        } else {
+          state.isSyncingReviews = false; // Clear sync flag if data didn't change
         }
       }
     }).catch(err => {
       // If backend fails, keep using local data
       console.warn("Background review sync failed (using local data):", err);
+      state.isSyncingReviews = false; // Clear sync flag on error
     });
   }, 500); // 500ms debounce to prevent rapid syncs
 
@@ -1878,6 +1917,11 @@ async function saveReviews(reviews) {
 async function renderReviews() {
   // Prevent concurrent renders to avoid flickering
   if (state.isRenderingReviews) {
+    return;
+  }
+  
+  // Don't render if we're currently syncing (prevents duplicate rendering)
+  if (state.isSyncingReviews) {
     return;
   }
   
