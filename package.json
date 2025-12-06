@@ -9,7 +9,10 @@
   "dependencies": {
     "better-sqlite3": "^9.2.2"
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.x"
+  }
 }
 
 

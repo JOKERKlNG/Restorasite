@@ -198,14 +198,38 @@ To reset the database, simply delete the `data/restora.db` file and restart the 
 
 ## Deployment
 
-### Vercel Deployment
+### Vercel Deployment (Ready to Deploy!)
 
-The project is ready for Vercel deployment. The database will be stored in `/tmp` directory on Vercel (note: this is ephemeral and will reset on each deployment).
+The project is **ready for direct deployment to Vercel**. Simply:
 
-For production, consider using:
-- **Vercel Postgres** (recommended for production)
+1. **Install Vercel CLI**:
+   ```bash
+   npm i -g vercel
+   ```
+
+2. **Deploy**:
+   ```bash
+   vercel
+   ```
+
+3. **Or use Vercel Dashboard**:
+   - Go to [vercel.com](https://vercel.com)
+   - Click "New Project"
+   - Import your Git repository
+   - Deploy!
+
+The project includes:
+- ✅ `vercel.json` configuration
+- ✅ Serverless function setup
+- ✅ Database configured for Vercel (`/tmp` directory)
+- ✅ All API endpoints ready
+
+**Important**: The database in `/tmp` is **ephemeral** (resets on deployment). For production, consider:
+- **Vercel Postgres** (recommended)
 - **PlanetScale** (MySQL)
 - **Supabase** (PostgreSQL)
+
+See `DEPLOYMENT.md` for detailed deployment instructions.
 
 ### Environment Variables
 

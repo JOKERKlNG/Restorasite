@@ -8,18 +8,29 @@ const DB_DIR = process.env.VERCEL ? '/tmp' : path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DB_DIR, 'restora.db');
 
 // Ensure directory exists
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DB_DIR)) {
+    fs.mkdirSync(DB_DIR, { recursive: true });
+  }
+} catch (err) {
+  console.warn('Could not create database directory:', err);
 }
 
-// Initialize database connection
+// Initialize database connection (singleton pattern for serverless)
 let db;
-try {
-  db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL'); // Enable Write-Ahead Logging for better concurrency
-} catch (error) {
-  console.error('Failed to connect to database:', error);
-  throw error;
+function getDatabase() {
+  if (!db) {
+    try {
+      db = new Database(DB_PATH);
+      db.pragma('journal_mode = WAL'); // Enable Write-Ahead Logging for better concurrency
+      // Initialize schema on first connection
+      initializeDatabase();
+    } catch (error) {
+      console.error('Failed to connect to database:', error);
+      throw error;
+    }
+  }
+  return db;
 }
 
 // Initialize database schema
@@ -216,8 +227,14 @@ function initializeDatabase() {
   console.log('Database initialized successfully');
 }
 
-// Initialize on module load
-initializeDatabase();
+// Initialize database on first access (lazy initialization for serverless)
+let initialized = false;
+function ensureInitialized() {
+  if (!initialized) {
+    getDatabase(); // This will call initializeDatabase
+    initialized = true;
+  }
+}
 
 // Helper function to create ID
 function createId() {
@@ -227,7 +244,10 @@ function createId() {
 }
 
 module.exports = {
-  db,
+  get db() {
+    ensureInitialized();
+    return getDatabase();
+  },
   createId,
   initializeDatabase,
 };
