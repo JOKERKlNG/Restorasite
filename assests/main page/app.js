@@ -931,7 +931,6 @@ async function renderMenu() {
   }
   
   els.menuList.innerHTML = "";
-  const reviews = await loadReviews();
   const adminLoggedIn = isAdmin();
   const currentUser = getCurrentUser();
   const favoriteIds = Array.isArray(currentUser?.favorites)
@@ -939,6 +938,7 @@ async function renderMenu() {
     : new Set();
   
   // Load reviews from localStorage for menu ratings (reliable source)
+  // Don't call loadReviews() here as it triggers sync and can cause duplicate renders
   const reviewsSaved = localStorage.getItem(STORAGE_KEYS.REVIEWS);
   let reviewsForMenu = [];
   if (reviewsSaved) {
@@ -947,6 +947,17 @@ async function renderMenu() {
       if (!Array.isArray(reviewsForMenu)) {
         reviewsForMenu = [];
       }
+      
+      // Deduplicate reviews by ID to prevent duplicate ratings
+      const seenIds = new Set();
+      const uniqueReviews = [];
+      reviewsForMenu.forEach(review => {
+        if (review.id && !seenIds.has(review.id)) {
+          seenIds.add(review.id);
+          uniqueReviews.push(review);
+        }
+      });
+      reviewsForMenu = uniqueReviews;
     } catch (e) {
       console.warn("Failed to parse reviews for menu:", e);
       reviewsForMenu = [];
@@ -958,7 +969,18 @@ async function renderMenu() {
     card.className = "menu-card";
     
     // Calculate average rating for this item
-    const itemReviews = reviewsForMenu.filter((r) => r.itemId === item.id);
+    // Filter reviews for this item and ensure no duplicates
+    const itemReviewsMap = new Map();
+    reviewsForMenu.forEach(review => {
+      if (review.itemId === item.id && review.id) {
+        // Use the most recent review if duplicates exist (shouldn't happen after deduplication above)
+        if (!itemReviewsMap.has(review.id)) {
+          itemReviewsMap.set(review.id, review);
+        }
+      }
+    });
+    const itemReviews = Array.from(itemReviewsMap.values());
+    
     const avgRating = itemReviews.length > 0
       ? itemReviews.reduce((sum, r) => sum + (r.rating || 0), 0) / itemReviews.length
       : 0;
@@ -1852,11 +1874,12 @@ async function loadReviews() {
                 requestAnimationFrame(() => {
                   if (!state.isRenderingReviews) {
                     renderReviews();
-                    renderMenu();
+                    // Don't call renderMenu() here - it will be called when needed
+                    // This prevents duplicate rating displays
                   }
                 });
               }
-            }, 200);
+            }, 300);
           } else {
             state.isSyncingReviews = false; // Clear sync flag even if not rendering
           }
