@@ -3,23 +3,55 @@ const { db } = require("./db");
 function sendJson(res, status, data) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.end(JSON.stringify(data));
 }
 
 module.exports = async (req, res) => {
   const { method } = req;
 
+  // Handle CORS preflight
+  if (method === "OPTIONS") {
+    res.statusCode = 200;
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.end();
+    return;
+  }
+
   try {
-    // Check if this is the analytics endpoint
-    const isAnalytics = req.url && (req.url.includes("/analytics") || req.url.includes("analytics"));
+    // Check if this is the analytics endpoint - handle both /sales/analytics and /api/sales/analytics
+    const urlPath = req.url.split('?')[0]; // Get path without query params
+    const isAnalytics = urlPath.includes("/analytics") || req.url.includes("analytics");
     
     if (method === "GET" && isAnalytics) {
-      const url = new URL(req.url, `http://${req.headers.host}`);
+      let url;
+      try {
+        url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      } catch (e) {
+        // Fallback for Vercel serverless environment
+        url = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
+      }
+      
       const period = parseInt(url.searchParams.get("period") || "30"); // days
       
       const startDate = Math.floor((Date.now() - (period * 24 * 60 * 60 * 1000)) / 1000);
       
-      let sales = await db.getSales();
+      // Get sales data with error handling
+      let sales = [];
+      try {
+        sales = await db.getSales();
+        if (!Array.isArray(sales)) {
+          console.warn("Sales data is not an array, defaulting to empty array");
+          sales = [];
+        }
+      } catch (err) {
+        console.error("Error fetching sales:", err);
+        sales = [];
+      }
       
       // Filter by date
       sales = sales.filter(s => s.created_at >= startDate);
@@ -35,8 +67,17 @@ module.exports = async (req, res) => {
       // Calculate average order value
       const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
       
-      // Get all orders to calculate additional stats
-      const orders = await db.getOrders();
+      // Get all orders to calculate additional stats (for future use)
+      let orders = [];
+      try {
+        orders = await db.getOrders();
+        if (!Array.isArray(orders)) {
+          orders = [];
+        }
+      } catch (err) {
+        console.error("Error fetching orders:", err);
+        orders = [];
+      }
       const ordersInPeriod = orders.filter(o => o.created_at >= startDate);
       
       // Top items by sales
@@ -61,7 +102,17 @@ module.exports = async (req, res) => {
         .slice(0, 10);
       
       // Get top rated items from reviews
-      const reviews = await db.getReviews();
+      let reviews = [];
+      try {
+        reviews = await db.getReviews();
+        if (!Array.isArray(reviews)) {
+          reviews = [];
+        }
+      } catch (err) {
+        console.error("Error fetching reviews:", err);
+        reviews = [];
+      }
+      
       const itemRatingMap = new Map();
       
       reviews.forEach(review => {
@@ -108,16 +159,29 @@ module.exports = async (req, res) => {
       const dailyRevenue = Array.from(dailyMap.values())
         .sort((a, b) => b.date.localeCompare(a.date));
       
-      return sendJson(res, 200, {
+      const analyticsData = {
         period,
-        totalRevenue,
-        totalOrders,
-        totalItemsOrdered,
-        averageOrderValue,
-        topItems,
-        topRatedItems,
-        dailyRevenue,
+        totalRevenue: totalRevenue || 0,
+        totalOrders: totalOrders || 0,
+        totalItemsOrdered: totalItemsOrdered || 0,
+        averageOrderValue: averageOrderValue || 0,
+        topItems: topItems || [],
+        topRatedItems: topRatedItems || [],
+        dailyRevenue: dailyRevenue || [],
+      };
+      
+      // Log analytics for debugging
+      console.log("Analytics calculated:", {
+        period,
+        salesCount: sales.length,
+        totalRevenue: analyticsData.totalRevenue,
+        totalOrders: analyticsData.totalOrders,
+        totalItemsOrdered: analyticsData.totalItemsOrdered,
+        topItemsCount: analyticsData.topItems.length,
+        topRatedItemsCount: analyticsData.topRatedItems.length,
       });
+      
+      return sendJson(res, 200, analyticsData);
     }
     
     if (method === "GET") {

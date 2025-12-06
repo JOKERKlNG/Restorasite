@@ -2262,15 +2262,21 @@ async function openAnalyticsModal() {
   els.analyticsModal.classList.remove("hidden");
   
   try {
-    const analytics = await apiGet("/sales/analytics?period=30", () => ({
-      totalRevenue: 0,
-      totalOrders: 0,
-      totalItemsOrdered: 0,
-      averageOrderValue: 0,
-      topItems: [],
-      topRatedItems: [],
-      dailyRevenue: [],
-    }));
+    console.log("Fetching analytics from /api/sales/analytics?period=30");
+    const analytics = await apiGet("/sales/analytics?period=30", () => {
+      console.warn("Analytics API fallback triggered");
+      return {
+        totalRevenue: 0,
+        totalOrders: 0,
+        totalItemsOrdered: 0,
+        averageOrderValue: 0,
+        topItems: [],
+        topRatedItems: [],
+        dailyRevenue: [],
+      };
+    });
+    
+    console.log("Analytics response received:", analytics);
     
     if (analytics) {
       renderAnalytics(analytics);
