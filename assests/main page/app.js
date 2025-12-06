@@ -230,14 +230,6 @@ const els = {
   orderHistoryModal: document.querySelector("#orderHistoryModal"),
   closeOrderHistoryModalBtn: document.querySelector("#closeOrderHistoryModalBtn"),
   orderHistoryList: document.querySelector("#orderHistoryList"),
-  analyticsBtn: document.querySelector("#analyticsBtn"),
-  analyticsModal: document.querySelector("#analyticsModal"),
-  closeAnalyticsModalBtn: document.querySelector("#closeAnalyticsModalBtn"),
-  totalRevenue: document.querySelector("#totalRevenue"),
-  totalOrders: document.querySelector("#totalOrders"),
-  totalItemsOrdered: document.querySelector("#totalItemsOrdered"),
-  averageOrderValue: document.querySelector("#averageOrderValue"),
-  topItemsList: document.querySelector("#topItemsList"),
 };
 
 const printRoot = document.createElement("div");
@@ -2248,133 +2240,10 @@ function renderOrderHistory(orders) {
 }
 
 
-// Analytics Dashboard (Admin Only)
-if (els.analyticsBtn) {
-  els.analyticsBtn.addEventListener("click", openAnalyticsModal);
-}
-
-if (els.closeAnalyticsModalBtn) {
-  els.closeAnalyticsModalBtn.addEventListener("click", closeAnalyticsModal);
-}
-
-if (els.analyticsModal) {
-  els.analyticsModal.addEventListener("click", (evt) => {
-    if (evt.target === els.analyticsModal) {
-      closeAnalyticsModal();
-    }
-  });
-}
-
-async function openAnalyticsModal() {
-  if (!els.analyticsModal) return;
-  if (!isAdmin()) {
-    alert("Only admins can access analytics.");
-    return;
-  }
-  
-  els.analyticsModal.classList.remove("hidden");
-  
-  // Show loading state
-  if (els.totalRevenue) els.totalRevenue.textContent = "Loading...";
-  if (els.totalOrders) els.totalOrders.textContent = "Loading...";
-  if (els.totalItemsOrdered) els.totalItemsOrdered.textContent = "Loading...";
-  if (els.averageOrderValue) els.averageOrderValue.textContent = "Loading...";
-  if (els.topItemsList) els.topItemsList.innerHTML = '<p class="loading">Loading analytics...</p>';
-  
-  try {
-    const analytics = await apiGet("/sales/analytics?period=30", () => ({
-      totalRevenue: 0,
-      totalOrders: 0,
-      totalItemsOrdered: 0,
-      averageOrderValue: 0,
-      topItems: [],
-    }));
-    
-    if (analytics) {
-      renderAnalytics(analytics);
-    } else {
-      renderAnalytics({ 
-        totalRevenue: 0, 
-        totalOrders: 0, 
-        totalItemsOrdered: 0,
-        averageOrderValue: 0,
-        topItems: [], 
-      });
-    }
-  } catch (err) {
-    console.error("Error loading analytics:", err);
-    renderAnalytics({ 
-      totalRevenue: 0, 
-      totalOrders: 0, 
-      totalItemsOrdered: 0,
-      averageOrderValue: 0,
-      topItems: [], 
-    });
-    if (els.topItemsList) {
-      els.topItemsList.innerHTML = '<p class="error-state">Failed to load analytics. Please try again later.</p>';
-    }
-  }
-}
-
-function closeAnalyticsModal() {
-  if (els.analyticsModal) {
-    els.analyticsModal.classList.add("hidden");
-  }
-}
-
-function renderAnalytics(data) {
-  if (!data) {
-    data = {
-      totalRevenue: 0,
-      totalOrders: 0,
-      totalItemsOrdered: 0,
-      averageOrderValue: 0,
-      topItems: [],
-    };
-  }
-  
-  if (els.totalRevenue) {
-    els.totalRevenue.textContent = formatCurrency(data.totalRevenue || 0);
-  }
-  
-  if (els.totalOrders) {
-    els.totalOrders.textContent = (data.totalOrders || 0).toLocaleString();
-  }
-  
-  if (els.totalItemsOrdered) {
-    els.totalItemsOrdered.textContent = (data.totalItemsOrdered || 0).toLocaleString();
-  }
-  
-  if (els.averageOrderValue) {
-    els.averageOrderValue.textContent = formatCurrency(data.averageOrderValue || 0);
-  }
-  
-  if (els.topItemsList) {
-    if (!data.topItems || data.topItems.length === 0) {
-      els.topItemsList.innerHTML = '<p class="empty-state">No sales data yet. Orders will appear here once customers start ordering.</p>';
-    } else {
-      els.topItemsList.innerHTML = data.topItems.map((item, index) => `
-        <div class="top-item-row">
-          <span class="rank">#${index + 1}</span>
-          <span class="item-name">${escapeHtml(item.name || 'Unknown')}</span>
-          <span class="item-quantity">${item.quantity || 0} sold</span>
-          <span class="item-revenue">${formatCurrency(item.revenue || 0)}</span>
-        </div>
-      `).join("");
-    }
-  }
-}
-
-// Update checkAdminStatus to show analytics button
+// Update checkAdminStatus (analytics removed)
 const originalCheckAdminStatus = checkAdminStatus;
 checkAdminStatus = function() {
   originalCheckAdminStatus();
-  
-  if (isAdmin() && els.analyticsBtn) {
-    els.analyticsBtn.style.display = "inline-block";
-  } else if (els.analyticsBtn) {
-    els.analyticsBtn.style.display = "none";
-  }
 };
 
 // Make checkAdminStatus available globally for testing
