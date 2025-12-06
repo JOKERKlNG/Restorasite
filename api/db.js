@@ -5,7 +5,9 @@ const fs = require('fs').promises;
 const path = require('path');
 
 // Database directory (use /tmp for Vercel, or data/ for local)
-const DB_DIR = process.env.VERCEL ? '/tmp' : path.join(__dirname, '..', 'data');
+// Check for Vercel environment variables
+const IS_VERCEL = process.env.VERCEL || process.env.VERCEL_ENV || process.env.NOW_REGION;
+const DB_DIR = IS_VERCEL ? '/tmp' : path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DB_DIR, 'restora.json');
 
 // Ensure directory exists
