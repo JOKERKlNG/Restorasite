@@ -840,10 +840,19 @@ async function renderMenu() {
   
   if (!state.menu || state.menu.length === 0) {
     console.warn("Menu is empty!");
-    els.menuList.innerHTML = "<p>No menu items available.</p>";
-    // Update category filter even if menu is empty
+    els.menuList.innerHTML = "<p class='empty-state'>No menu items available.</p>";
+    // Update category filter even if menu is empty - preserve current selection
     if (els.menuCategoryFilter) {
+      const currentValue = els.menuCategoryFilter.value;
       els.menuCategoryFilter.innerHTML = '<option value="">All Categories</option>';
+      if (currentValue) {
+        // Try to preserve selection if possible
+        try {
+          els.menuCategoryFilter.value = currentValue;
+        } catch (e) {
+          // Selection doesn't exist anymore, ignore
+        }
+      }
     }
     return;
   }
@@ -913,9 +922,12 @@ async function renderMenu() {
     els.menuList.appendChild(card);
   });
   
-  // Update category filter after rendering menu
+  // Update category filter after rendering menu - preserve selected value
   if (els.menuCategoryFilter && state.menu) {
-    const categories = [...new Set(state.menu.map(item => item.category))];
+    const currentValue = els.menuCategoryFilter.value; // Preserve current selection
+    const categories = [...new Set(state.menu.map(item => item.category).filter(Boolean))];
+    categories.sort(); // Sort alphabetically
+    
     els.menuCategoryFilter.innerHTML = '<option value="">All Categories</option>';
     categories.forEach(cat => {
       const option = document.createElement("option");
@@ -923,6 +935,11 @@ async function renderMenu() {
       option.textContent = cat;
       els.menuCategoryFilter.appendChild(option);
     });
+    
+    // Restore previous selection if it still exists
+    if (currentValue && categories.includes(currentValue)) {
+      els.menuCategoryFilter.value = currentValue;
+    }
   }
 }
 
@@ -1036,6 +1053,7 @@ async function handlePayment() {
   
   // Save order to database
   const currentUser = getCurrentUser();
+  let orderSaved = false;
   try {
     const orderData = {
       userId: currentUser?.email || null,
@@ -1051,11 +1069,29 @@ async function handlePayment() {
       paymentMethod: "online",
     };
     
-    await apiPost("/orders", orderData, () => {
+    const savedOrder = await apiPost("/orders", orderData, () => {
       console.warn("Failed to save order to database, but continuing with payment");
       return null;
     });
-    console.log("Order saved successfully");
+    
+    if (savedOrder) {
+      console.log("Order saved successfully:", savedOrder.id);
+      orderSaved = true;
+      
+      // Refresh order history if modal is open
+      if (els.orderHistoryModal && !els.orderHistoryModal.classList.contains("hidden")) {
+        setTimeout(() => {
+          loadOrderHistory();
+        }, 500);
+      }
+      
+      // Refresh analytics if modal is open (admin only)
+      if (isAdmin() && els.analyticsModal && !els.analyticsModal.classList.contains("hidden")) {
+        setTimeout(() => {
+          openAnalyticsModal();
+        }, 500);
+      }
+    }
   } catch (err) {
     console.error("Error saving order:", err);
     // Continue with payment even if save fails
@@ -1065,6 +1101,21 @@ async function handlePayment() {
   els.paymentArea.classList.remove("hidden");
   state.cart.clear();
   renderCart();
+  
+  // Show success message
+  if (orderSaved) {
+    const successMsg = document.createElement("div");
+    successMsg.className = "success-message";
+    successMsg.textContent = "Order placed successfully!";
+    document.body.appendChild(successMsg);
+    setTimeout(() => {
+      successMsg.classList.add("show");
+    }, 10);
+    setTimeout(() => {
+      successMsg.classList.remove("show");
+      setTimeout(() => successMsg.remove(), 300);
+    }, 3000);
+  }
 }
 
 
@@ -2049,34 +2100,40 @@ function renderOrderHistory(orders) {
   if (!els.orderHistoryList) return;
   
   if (!orders || orders.length === 0) {
-    els.orderHistoryList.innerHTML = '<p class="empty-state">No orders yet.</p>';
+    els.orderHistoryList.innerHTML = '<p class="empty-state">No orders yet. Start ordering to see your history here!</p>';
     return;
   }
   
   els.orderHistoryList.innerHTML = orders.map(order => {
-    const date = new Date(order.createdAt).toLocaleString();
-    const items = Array.isArray(order.items) ? order.items : [];
+    const date = new Date(order.createdAt || order.created_at * 1000 || Date.now()).toLocaleString();
+    const items = Array.isArray(order.items) ? order.items : (typeof order.items === 'string' ? JSON.parse(order.items) : []);
+    const total = order.total || 0;
     
     return `
       <article class="order-history-item">
         <header>
           <div>
-            <h4>Order #${order.id.slice(-8)}</h4>
-            <p>${date}</p>
+            <h4>Order #${order.id ? order.id.slice(-8) : 'N/A'}</h4>
+            <p class="order-date">${date}</p>
           </div>
-          <div>
-            <strong>${formatCurrency(order.total)}</strong>
-            <span class="order-status status-${order.status || 'pending'}">${order.status || 'pending'}</span>
+          <div class="order-header-right">
+            <strong class="order-total">${formatCurrency(total)}</strong>
+            <span class="order-status status-${order.status || 'pending'}">${(order.status || 'pending').toUpperCase()}</span>
           </div>
         </header>
         <div class="order-items">
           ${items.map(item => `
             <div class="order-item">
-              <span>${escapeHtml(item.name || 'Unknown')}</span>
-              <span>${item.qty || 1}x ${formatCurrency(item.price || 0)}</span>
+              <span class="item-name">${escapeHtml(item.name || 'Unknown')}</span>
+              <span class="item-details">${item.qty || 1}x ${formatCurrency(item.price || 0)}</span>
             </div>
           `).join("")}
         </div>
+        ${order.subtotal ? `<div class="order-summary">
+          <div>Subtotal: ${formatCurrency(order.subtotal)}</div>
+          ${order.tax ? `<div>Tax: ${formatCurrency(order.tax)}</div>` : ''}
+          <div class="order-total-line">Total: ${formatCurrency(total)}</div>
+        </div>` : ''}
       </article>
     `;
   }).join("");
@@ -2125,27 +2182,41 @@ function closeAnalyticsModal() {
 }
 
 function renderAnalytics(data) {
+  if (!data) {
+    data = {
+      totalRevenue: 0,
+      totalOrders: 0,
+      topItems: [],
+      dailyRevenue: [],
+    };
+  }
+  
   if (els.totalRevenue) {
     els.totalRevenue.textContent = formatCurrency(data.totalRevenue || 0);
   }
   
   if (els.totalOrders) {
-    els.totalOrders.textContent = data.totalOrders || 0;
+    els.totalOrders.textContent = (data.totalOrders || 0).toLocaleString();
   }
   
-  if (els.topItem && data.topItems && data.topItems.length > 0) {
-    els.topItem.textContent = `${data.topItems[0].name} (${data.topItems[0].quantity} sold)`;
+  if (els.topItem) {
+    if (data.topItems && data.topItems.length > 0) {
+      const topItem = data.topItems[0];
+      els.topItem.textContent = `${escapeHtml(topItem.name)} (${topItem.quantity || 0} sold)`;
+    } else {
+      els.topItem.textContent = "-";
+    }
   }
   
   if (els.topItemsList) {
     if (!data.topItems || data.topItems.length === 0) {
-      els.topItemsList.innerHTML = '<p class="empty-state">No sales data yet.</p>';
+      els.topItemsList.innerHTML = '<p class="empty-state">No sales data yet. Orders will appear here once customers start ordering.</p>';
     } else {
       els.topItemsList.innerHTML = data.topItems.map((item, index) => `
         <div class="top-item-row">
           <span class="rank">#${index + 1}</span>
-          <span class="item-name">${escapeHtml(item.name)}</span>
-          <span class="item-quantity">${item.quantity} sold</span>
+          <span class="item-name">${escapeHtml(item.name || 'Unknown')}</span>
+          <span class="item-quantity">${item.quantity || 0} sold</span>
           <span class="item-revenue">${formatCurrency(item.revenue || 0)}</span>
         </div>
       `).join("");
