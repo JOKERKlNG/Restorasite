@@ -55,11 +55,11 @@ module.exports = async (req, res) => {
 
     if (method === "POST") {
       const payload = await parseBody(req);
-      const { id, itemId, rating, reviewerName, text, userEmail } = payload;
+      const { id, itemId, rating, reviewerName, text, userEmail, itemName } = payload;
       
-      if (!itemId || !rating || !reviewerName || !text) {
+      if (!itemId || !rating || !text) {
         return sendJson(res, 400, {
-          error: "itemId, rating, reviewerName and text are required",
+          error: "itemId, rating and text are required",
         });
       }
 
@@ -69,9 +69,12 @@ module.exports = async (req, res) => {
         });
       }
 
-      // Get item name
-      const item = await db.getMenuItem(itemId);
-      const itemName = item?.name || "Unknown";
+      // Get item name - use provided itemName or fetch from database
+      let finalItemName = itemName;
+      if (!finalItemName) {
+        const item = await db.getMenuItem(itemId);
+        finalItemName = item?.name || "Unknown";
+      }
 
       const reviewId = id || createId();
       const now = Math.floor(Date.now() / 1000);
@@ -79,9 +82,9 @@ module.exports = async (req, res) => {
       const review = {
         id: reviewId,
         item_id: itemId,
-        item_name: itemName,
+        item_name: finalItemName,
         rating: Number(rating),
-        reviewer_name: reviewerName,
+        reviewer_name: reviewerName || "Anonymous",
         text,
         user_id: null,
         created_at: now,

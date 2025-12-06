@@ -35,7 +35,14 @@ const server = http.createServer((req, res) => {
 
   // Handle API routes
   if (pathname.startsWith('/api/')) {
-    const handlerPath = pathname;
+    let handlerPath = pathname;
+    // Handle analytics endpoint (special case)
+    if (pathname.startsWith('/api/sales/analytics')) {
+      handlerPath = '/api/sales';
+      // Modify req.url to include /analytics for the handler
+      req.url = req.url.replace('/api/sales', '/api/sales/analytics');
+    }
+    
     const handler = apiRoutes[handlerPath];
     if (handler) {
       handler(req, res).catch(err => {

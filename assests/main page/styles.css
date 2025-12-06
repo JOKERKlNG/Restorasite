@@ -1579,6 +1579,134 @@ textarea:focus-visible {
   }
 }
 
+/* Analytics Dashboard */
+.analytics-modal {
+  max-width: 1000px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.analytics-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.analytics-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.stat-card {
+  background: rgba(15, 15, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 1.5rem;
+  text-align: center;
+  transition: transform 0.25s, box-shadow 0.25s;
+}
+
+.stat-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(139, 69, 19, 0.4);
+}
+
+.stat-card h4 {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-card p {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #ffd166;
+}
+
+.analytics-charts {
+  background: rgba(15, 15, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 1.5rem;
+}
+
+.analytics-charts h4 {
+  margin-bottom: 1rem;
+  font-size: 1.2rem;
+}
+
+.top-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.top-item-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 12px;
+  transition: background 0.25s;
+}
+
+.top-item-row:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.top-item-row .rank {
+  font-weight: 700;
+  color: #ffd166;
+  font-size: 1.1rem;
+}
+
+.top-item-row .item-name {
+  font-weight: 600;
+}
+
+.top-item-row .item-quantity {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.9rem;
+}
+
+.top-item-row .item-revenue {
+  font-weight: 700;
+  color: #22c55e;
+}
+
+@media (max-width: 768px) {
+  .analytics-stats {
+    grid-template-columns: 1fr;
+  }
+  
+  .top-item-row {
+    grid-template-columns: auto 1fr;
+    gap: 0.5rem;
+  }
+  
+  .top-item-row .item-quantity,
+  .top-item-row .item-revenue {
+    grid-column: 2;
+  }
+  
+  .stat-card {
+    padding: 1rem;
+  }
+  
+  .stat-card p {
+    font-size: 1.5rem;
+  }
+  
+  .analytics-charts {
+    padding: 1rem;
+  }
+}
+
 
 @media (max-width: 768px) {
   .order-history-modal {

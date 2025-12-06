@@ -180,7 +180,6 @@ const els = {
   reviewForm: document.querySelector("#reviewForm"),
   reviewItemId: document.querySelector("#reviewItemId"),
   reviewRating: document.querySelector("#reviewRating"),
-  reviewerName: document.querySelector("#reviewerName"),
   reviewText: document.querySelector("#reviewText"),
   cancelReviewBtn: document.querySelector("#cancelReviewBtn"),
   reviewsList: document.querySelector("#reviewsList"),
@@ -231,6 +230,14 @@ const els = {
   orderHistoryModal: document.querySelector("#orderHistoryModal"),
   closeOrderHistoryModalBtn: document.querySelector("#closeOrderHistoryModalBtn"),
   orderHistoryList: document.querySelector("#orderHistoryList"),
+  analyticsBtn: document.querySelector("#analyticsBtn"),
+  analyticsModal: document.querySelector("#analyticsModal"),
+  closeAnalyticsModalBtn: document.querySelector("#closeAnalyticsModalBtn"),
+  totalRevenue: document.querySelector("#totalRevenue"),
+  totalOrders: document.querySelector("#totalOrders"),
+  totalItemsOrdered: document.querySelector("#totalItemsOrdered"),
+  averageOrderValue: document.querySelector("#averageOrderValue"),
+  topItemsList: document.querySelector("#topItemsList"),
 };
 
 const printRoot = document.createElement("div");
@@ -581,24 +588,29 @@ if (els.reviewForm) {
   els.reviewForm.addEventListener("submit", async (evt) => {
     evt.preventDefault();
     
-    if (!els.reviewItemId || !els.reviewRating || !els.reviewerName || !els.reviewText) {
+    if (!els.reviewItemId || !els.reviewRating || !els.reviewText) {
       console.error("Review form elements not found");
       alert("Error: Review form not properly initialized. Please refresh the page.");
       return;
     }
     
+    const currentUser = getCurrentUser();
+    const itemId = els.reviewItemId.value;
+    const menuItem = state.menu.find((item) => item.id === itemId);
+    const itemName = menuItem?.name || "Unknown";
+    
     const reviewData = {
       id: createId(),
-      itemId: els.reviewItemId.value,
-      itemName: state.menu.find((item) => item.id === els.reviewItemId.value)?.name || "Unknown",
+      itemId: itemId,
+      itemName: itemName,
       rating: parseInt(els.reviewRating.value),
-      reviewerName: els.reviewerName.value.trim(),
+      reviewerName: currentUser?.name || "Anonymous",
       text: els.reviewText.value.trim(),
       timestamp: Date.now(),
     };
 
-    if (!reviewData.itemId || !reviewData.rating || reviewData.rating === 0 || !reviewData.reviewerName || !reviewData.text) {
-      alert("Please fill in all fields and select a rating (1-5 stars).");
+    if (!reviewData.itemId || !reviewData.rating || reviewData.rating === 0 || !reviewData.text) {
+      alert("Please select a rating (1-5 stars) and write your review.");
       return;
     }
 
@@ -631,7 +643,13 @@ if (els.reviewForm) {
     }
     
     // Sync to backend in background (non-blocking)
-    saveReviews(reviews).catch(err => {
+    apiPost("/reviews", {
+      itemId: reviewData.itemId,
+      itemName: reviewData.itemName,
+      rating: reviewData.rating,
+      reviewerName: reviewData.reviewerName,
+      text: reviewData.text,
+    }).catch(err => {
       console.warn("Background sync failed, but review is saved locally:", err);
     });
     
@@ -1131,19 +1149,23 @@ async function handlePayment() {
   state.cart.clear();
   renderCart();
   
-  // Show success message
+  // Show "Ordered" popup after 2 seconds (after QR code is displayed)
   if (orderSaved) {
-    const successMsg = document.createElement("div");
-    successMsg.className = "success-message";
-    successMsg.textContent = "Order placed successfully!";
-    document.body.appendChild(successMsg);
     setTimeout(() => {
-      successMsg.classList.add("show");
-    }, 10);
-    setTimeout(() => {
-      successMsg.classList.remove("show");
-      setTimeout(() => successMsg.remove(), 300);
-    }, 3000);
+      const orderedMsg = document.createElement("div");
+      orderedMsg.className = "success-message";
+      orderedMsg.textContent = "Ordered!";
+      orderedMsg.style.fontSize = "1.5rem";
+      orderedMsg.style.fontWeight = "bold";
+      document.body.appendChild(orderedMsg);
+      setTimeout(() => {
+        orderedMsg.classList.add("show");
+      }, 10);
+      setTimeout(() => {
+        orderedMsg.classList.remove("show");
+        setTimeout(() => orderedMsg.remove(), 300);
+      }, 3000);
+    }, 2000);
   }
 }
 
@@ -1716,6 +1738,17 @@ async function loadReviews() {
     window.reviewSyncTimeout = null;
     apiGet("/reviews", () => null).then((backendReviews) => {
       if (Array.isArray(backendReviews)) {
+        // Ensure backend reviews have itemName - if missing, try to get from menu
+        backendReviews = backendReviews.map(review => {
+          if (!review.itemName && review.itemId) {
+            const menuItem = state.menu.find(item => item.id === review.itemId);
+            review.itemName = menuItem?.name || review.item_name || "Unknown Item";
+          } else if (!review.itemName) {
+            review.itemName = review.item_name || "Unknown Item";
+          }
+          return review;
+        });
+        
         // Backend is source of truth - use it to sync deletions
         // Create a map of backend review IDs
         const backendIds = new Set(backendReviews.map(r => r.id));
@@ -2215,10 +2248,133 @@ function renderOrderHistory(orders) {
 }
 
 
-// Update checkAdminStatus (analytics removed)
+// Analytics Dashboard (Admin Only)
+if (els.analyticsBtn) {
+  els.analyticsBtn.addEventListener("click", openAnalyticsModal);
+}
+
+if (els.closeAnalyticsModalBtn) {
+  els.closeAnalyticsModalBtn.addEventListener("click", closeAnalyticsModal);
+}
+
+if (els.analyticsModal) {
+  els.analyticsModal.addEventListener("click", (evt) => {
+    if (evt.target === els.analyticsModal) {
+      closeAnalyticsModal();
+    }
+  });
+}
+
+async function openAnalyticsModal() {
+  if (!els.analyticsModal) return;
+  if (!isAdmin()) {
+    alert("Only admins can access analytics.");
+    return;
+  }
+  
+  els.analyticsModal.classList.remove("hidden");
+  
+  // Show loading state
+  if (els.totalRevenue) els.totalRevenue.textContent = "Loading...";
+  if (els.totalOrders) els.totalOrders.textContent = "Loading...";
+  if (els.totalItemsOrdered) els.totalItemsOrdered.textContent = "Loading...";
+  if (els.averageOrderValue) els.averageOrderValue.textContent = "Loading...";
+  if (els.topItemsList) els.topItemsList.innerHTML = '<p class="loading">Loading analytics...</p>';
+  
+  try {
+    const analytics = await apiGet("/sales/analytics?period=30", () => ({
+      totalRevenue: 0,
+      totalOrders: 0,
+      totalItemsOrdered: 0,
+      averageOrderValue: 0,
+      topItems: [],
+    }));
+    
+    if (analytics) {
+      renderAnalytics(analytics);
+    } else {
+      renderAnalytics({ 
+        totalRevenue: 0, 
+        totalOrders: 0, 
+        totalItemsOrdered: 0,
+        averageOrderValue: 0,
+        topItems: [], 
+      });
+    }
+  } catch (err) {
+    console.error("Error loading analytics:", err);
+    renderAnalytics({ 
+      totalRevenue: 0, 
+      totalOrders: 0, 
+      totalItemsOrdered: 0,
+      averageOrderValue: 0,
+      topItems: [], 
+    });
+    if (els.topItemsList) {
+      els.topItemsList.innerHTML = '<p class="error-state">Failed to load analytics. Please try again later.</p>';
+    }
+  }
+}
+
+function closeAnalyticsModal() {
+  if (els.analyticsModal) {
+    els.analyticsModal.classList.add("hidden");
+  }
+}
+
+function renderAnalytics(data) {
+  if (!data) {
+    data = {
+      totalRevenue: 0,
+      totalOrders: 0,
+      totalItemsOrdered: 0,
+      averageOrderValue: 0,
+      topItems: [],
+    };
+  }
+  
+  if (els.totalRevenue) {
+    els.totalRevenue.textContent = formatCurrency(data.totalRevenue || 0);
+  }
+  
+  if (els.totalOrders) {
+    els.totalOrders.textContent = (data.totalOrders || 0).toLocaleString();
+  }
+  
+  if (els.totalItemsOrdered) {
+    els.totalItemsOrdered.textContent = (data.totalItemsOrdered || 0).toLocaleString();
+  }
+  
+  if (els.averageOrderValue) {
+    els.averageOrderValue.textContent = formatCurrency(data.averageOrderValue || 0);
+  }
+  
+  if (els.topItemsList) {
+    if (!data.topItems || data.topItems.length === 0) {
+      els.topItemsList.innerHTML = '<p class="empty-state">No sales data yet. Orders will appear here once customers start ordering.</p>';
+    } else {
+      els.topItemsList.innerHTML = data.topItems.map((item, index) => `
+        <div class="top-item-row">
+          <span class="rank">#${index + 1}</span>
+          <span class="item-name">${escapeHtml(item.name || 'Unknown')}</span>
+          <span class="item-quantity">${item.quantity || 0} sold</span>
+          <span class="item-revenue">${formatCurrency(item.revenue || 0)}</span>
+        </div>
+      `).join("");
+    }
+  }
+}
+
+// Update checkAdminStatus to show analytics button
 const originalCheckAdminStatus = checkAdminStatus;
 checkAdminStatus = function() {
   originalCheckAdminStatus();
+  
+  if (isAdmin() && els.analyticsBtn) {
+    els.analyticsBtn.style.display = "inline-block";
+  } else if (els.analyticsBtn) {
+    els.analyticsBtn.style.display = "none";
+  }
 };
 
 // Make checkAdminStatus available globally for testing

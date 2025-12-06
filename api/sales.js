@@ -23,7 +23,69 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Sales API - basic GET endpoint for sales data (analytics removed)
+    // Check if this is the analytics endpoint
+    const urlPath = req.url.split('?')[0];
+    const isAnalytics = urlPath.includes("/analytics") || req.url.includes("analytics");
+    
+    if (method === "GET" && isAnalytics) {
+      let url;
+      try {
+        url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      } catch (e) {
+        url = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
+      }
+      
+      const period = parseInt(url.searchParams.get("period") || "30");
+      const startDate = Math.floor((Date.now() - (period * 24 * 60 * 60 * 1000)) / 1000);
+      
+      let sales = [];
+      try {
+        sales = await db.getSales();
+        if (!Array.isArray(sales)) sales = [];
+      } catch (err) {
+        console.error("Error fetching sales:", err);
+        sales = [];
+      }
+      
+      sales = sales.filter(s => s.created_at >= startDate);
+      
+      const totalRevenue = sales.reduce((sum, s) => sum + (s.total || 0), 0);
+      const uniqueOrders = new Set(sales.map(s => s.order_id).filter(Boolean));
+      const totalOrders = uniqueOrders.size;
+      const totalItemsOrdered = sales.reduce((sum, s) => sum + (s.quantity || 0), 0);
+      const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+      
+      // Top items by sales
+      const itemMap = new Map();
+      sales.forEach(sale => {
+        const key = sale.item_id || sale.item_name;
+        if (!itemMap.has(key)) {
+          itemMap.set(key, { 
+            name: sale.item_name, 
+            quantity: 0, 
+            revenue: 0,
+            item_id: sale.item_id 
+          });
+        }
+        const item = itemMap.get(key);
+        item.quantity += sale.quantity || 0;
+        item.revenue += sale.total || 0;
+      });
+      
+      const topItems = Array.from(itemMap.values())
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10);
+      
+      return sendJson(res, 200, {
+        period,
+        totalRevenue: totalRevenue || 0,
+        totalOrders: totalOrders || 0,
+        totalItemsOrdered: totalItemsOrdered || 0,
+        averageOrderValue: averageOrderValue || 0,
+        topItems: topItems || [],
+      });
+    }
+    
     if (method === "GET") {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const startDate = url.searchParams.get("startDate");
