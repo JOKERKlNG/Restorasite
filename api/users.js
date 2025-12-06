@@ -30,28 +30,34 @@ module.exports = async (req, res) => {
       const email = url.searchParams.get("email");
       
       if (email) {
-        const user = db.prepare("SELECT id, email, name, role, avatar_url, favorites, created_at, updated_at FROM users WHERE email = ?").get(email);
+        const user = await db.getUserByEmail(email);
         if (!user) {
           return sendJson(res, 404, { error: "User not found" });
         }
         
+        // Remove password from response
+        const { password, ...safeUser } = user;
+        
         return sendJson(res, 200, {
-          ...user,
-          favorites: user.favorites ? JSON.parse(user.favorites) : [],
-          createdAt: user.created_at * 1000,
-          updatedAt: user.updated_at * 1000,
+          ...safeUser,
+          favorites: user.favorites ? (typeof user.favorites === 'string' ? JSON.parse(user.favorites) : user.favorites) : [],
+          createdAt: user.created_at ? user.created_at * 1000 : Date.now(),
+          updatedAt: user.updated_at ? user.updated_at * 1000 : Date.now(),
         });
       }
       
       // Get all users (without passwords)
-      const users = db.prepare("SELECT id, email, name, role, avatar_url, favorites, created_at, updated_at FROM users").all();
+      const users = await db.getUsers();
       
-      const formatted = users.map(u => ({
-        ...u,
-        favorites: u.favorites ? JSON.parse(u.favorites) : [],
-        createdAt: u.created_at * 1000,
-        updatedAt: u.updated_at * 1000,
-      }));
+      const formatted = users.map(u => {
+        const { password, ...safeUser } = u;
+        return {
+          ...safeUser,
+          favorites: u.favorites ? (typeof u.favorites === 'string' ? JSON.parse(u.favorites) : u.favorites) : [],
+          createdAt: u.created_at ? u.created_at * 1000 : Date.now(),
+          updatedAt: u.updated_at ? u.updated_at * 1000 : Date.now(),
+        };
+      });
       
       return sendJson(res, 200, formatted);
     }
@@ -67,7 +73,7 @@ module.exports = async (req, res) => {
       }
 
       // Check if user exists
-      const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+      const existing = await db.getUserByEmail(email);
       if (existing) {
         return sendJson(res, 409, { error: "User already exists" });
       }
@@ -75,34 +81,29 @@ module.exports = async (req, res) => {
       const userId = createId();
       const now = Math.floor(Date.now() / 1000);
 
-      try {
-        db.prepare(`
-          INSERT INTO users (id, email, password, name, role, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          userId,
-          email,
-          password,
-          name,
-          role || "user",
-          now,
-          now
-        );
+      const user = {
+        id: userId,
+        email,
+        password,
+        name,
+        role: role || "user",
+        avatar_url: null,
+        favorites: null,
+        created_at: now,
+        updated_at: now,
+      };
 
-        const user = db.prepare("SELECT id, email, name, role, avatar_url, favorites, created_at, updated_at FROM users WHERE id = ?").get(userId);
-        
-        return sendJson(res, 201, {
-          ...user,
-          favorites: user.favorites ? JSON.parse(user.favorites) : [],
-          createdAt: user.created_at * 1000,
-          updatedAt: user.updated_at * 1000,
-        });
-      } catch (dbError) {
-        if (dbError.code === 'SQLITE_CONSTRAINT') {
-          return sendJson(res, 409, { error: "User already exists" });
-        }
-        throw dbError;
-      }
+      await db.createUser(user);
+      
+      // Remove password from response
+      const { password: _, ...safeUser } = user;
+      
+      return sendJson(res, 201, {
+        ...safeUser,
+        favorites: [],
+        createdAt: user.created_at * 1000,
+        updatedAt: user.updated_at * 1000,
+      });
     }
 
     if (method === "PATCH") {
@@ -110,45 +111,30 @@ module.exports = async (req, res) => {
       const id = url.searchParams.get("id");
       if (!id) return sendJson(res, 400, { error: "id query parameter is required" });
 
-      const existing = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
-      if (!existing) {
+      const existing = await db.getUsers();
+      const user = existing.find(u => u.id === id);
+      if (!user) {
         return sendJson(res, 404, { error: "User not found" });
       }
 
       const payload = await parseBody(req);
-      const updates = [];
-      const params = [];
+      const updates = {};
       
-      if (payload.name !== undefined) {
-        updates.push("name = ?");
-        params.push(payload.name);
-      }
-      if (payload.avatar_url !== undefined) {
-        updates.push("avatar_url = ?");
-        params.push(payload.avatar_url);
-      }
+      if (payload.name !== undefined) updates.name = payload.name;
+      if (payload.avatar_url !== undefined) updates.avatar_url = payload.avatar_url;
       if (payload.favorites !== undefined) {
-        updates.push("favorites = ?");
-        params.push(JSON.stringify(payload.favorites));
+        updates.favorites = typeof payload.favorites === 'string' ? payload.favorites : JSON.stringify(payload.favorites);
       }
-      if (payload.role !== undefined) {
-        updates.push("role = ?");
-        params.push(payload.role);
-      }
+      if (payload.role !== undefined) updates.role = payload.role;
       
-      if (updates.length > 0) {
-        updates.push("updated_at = ?");
-        params.push(Math.floor(Date.now() / 1000));
-        params.push(id);
-        
-        db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...params);
-      }
-
-      const updated = db.prepare("SELECT id, email, name, role, avatar_url, favorites, created_at, updated_at FROM users WHERE id = ?").get(id);
+      const updated = await db.updateUser(id, updates);
+      
+      // Remove password from response
+      const { password: _, ...safeUser } = updated;
       
       return sendJson(res, 200, {
-        ...updated,
-        favorites: updated.favorites ? JSON.parse(updated.favorites) : [],
+        ...safeUser,
+        favorites: updated.favorites ? (typeof updated.favorites === 'string' ? JSON.parse(updated.favorites) : updated.favorites) : [],
         createdAt: updated.created_at * 1000,
         updatedAt: updated.updated_at * 1000,
       });

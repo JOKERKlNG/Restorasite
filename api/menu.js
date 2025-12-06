@@ -29,42 +29,29 @@ module.exports = async (req, res) => {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const category = url.searchParams.get("category");
       const search = url.searchParams.get("search");
-      const available = url.searchParams.get("available");
       
-      let query = "SELECT * FROM menu";
-      const params = [];
-      const conditions = [];
+      let menu = await db.getMenu();
       
+      // Filter by category
       if (category) {
-        conditions.push("category = ?");
-        params.push(category);
+        menu = menu.filter(item => item.category === category);
       }
       
+      // Filter by search term
       if (search) {
-        conditions.push("(name LIKE ? OR description LIKE ?)");
-        const searchTerm = `%${search}%`;
-        params.push(searchTerm, searchTerm);
+        const searchLower = search.toLowerCase();
+        menu = menu.filter(item => 
+          item.name.toLowerCase().includes(searchLower) ||
+          (item.description && item.description.toLowerCase().includes(searchLower))
+        );
       }
-      
-      if (available !== null && available !== undefined) {
-        conditions.push("available = ?");
-        params.push(available === "true" || available === "1" ? 1 : 0);
-      }
-      
-      if (conditions.length > 0) {
-        query += " WHERE " + conditions.join(" AND ");
-      }
-      
-      query += " ORDER BY created_at DESC";
-      
-      const menu = db.prepare(query).all(...params);
       
       // Convert timestamps
       const formatted = menu.map(item => ({
         ...item,
-        createdAt: item.created_at * 1000,
-        updatedAt: item.updated_at * 1000,
-        available: item.available === 1,
+        createdAt: item.created_at ? item.created_at * 1000 : Date.now(),
+        updatedAt: item.updated_at ? item.updated_at * 1000 : Date.now(),
+        available: item.available !== undefined ? item.available : true,
       }));
       
       return sendJson(res, 200, formatted);
@@ -81,36 +68,25 @@ module.exports = async (req, res) => {
       const itemId = id || createId();
       const now = Math.floor(Date.now() / 1000);
 
-      try {
-        db.prepare(`
-          INSERT INTO menu (id, name, price, image, category, description, available, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          itemId,
-          name,
-          Number(price),
-          image || "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=400&q=60",
-          category || "Specials",
-          description || null,
-          available !== undefined ? (available ? 1 : 0) : 1,
-          now,
-          now
-        );
+      const item = {
+        id: itemId,
+        name,
+        price: Number(price),
+        image: image || "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=400&q=60",
+        category: category || "Specials",
+        description: description || null,
+        available: available !== undefined ? available : true,
+        created_at: now,
+        updated_at: now,
+      };
 
-        const item = db.prepare("SELECT * FROM menu WHERE id = ?").get(itemId);
-        
-        return sendJson(res, 201, {
-          ...item,
-          createdAt: item.created_at * 1000,
-          updatedAt: item.updated_at * 1000,
-          available: item.available === 1,
-        });
-      } catch (dbError) {
-        if (dbError.code === 'SQLITE_CONSTRAINT') {
-          return sendJson(res, 409, { error: "Menu item already exists" });
-        }
-        throw dbError;
-      }
+      await db.createMenuItem(item);
+      
+      return sendJson(res, 201, {
+        ...item,
+        createdAt: item.created_at * 1000,
+        updatedAt: item.updated_at * 1000,
+      });
     }
 
     if (method === "PUT" || method === "PATCH") {
@@ -118,55 +94,28 @@ module.exports = async (req, res) => {
       const id = url.searchParams.get("id");
       if (!id) return sendJson(res, 400, { error: "id query parameter is required" });
 
-      const existing = db.prepare("SELECT * FROM menu WHERE id = ?").get(id);
+      const existing = await db.getMenuItem(id);
       if (!existing) {
         return sendJson(res, 404, { error: "Menu item not found" });
       }
 
       const payload = await parseBody(req);
-      const updates = [];
-      const params = [];
+      const updates = {};
       
-      if (payload.name !== undefined) {
-        updates.push("name = ?");
-        params.push(payload.name);
-      }
-      if (payload.price !== undefined) {
-        updates.push("price = ?");
-        params.push(Number(payload.price));
-      }
-      if (payload.image !== undefined) {
-        updates.push("image = ?");
-        params.push(payload.image);
-      }
-      if (payload.category !== undefined) {
-        updates.push("category = ?");
-        params.push(payload.category);
-      }
-      if (payload.description !== undefined) {
-        updates.push("description = ?");
-        params.push(payload.description);
-      }
-      if (payload.available !== undefined) {
-        updates.push("available = ?");
-        params.push(payload.available ? 1 : 0);
-      }
+      if (payload.name !== undefined) updates.name = payload.name;
+      if (payload.price !== undefined) updates.price = Number(payload.price);
+      if (payload.image !== undefined) updates.image = payload.image;
+      if (payload.category !== undefined) updates.category = payload.category;
+      if (payload.description !== undefined) updates.description = payload.description;
+      if (payload.available !== undefined) updates.available = payload.available;
       
-      if (updates.length > 0) {
-        updates.push("updated_at = ?");
-        params.push(Math.floor(Date.now() / 1000));
-        params.push(id);
-        
-        db.prepare(`UPDATE menu SET ${updates.join(", ")} WHERE id = ?`).run(...params);
-      }
-
-      const updated = db.prepare("SELECT * FROM menu WHERE id = ?").get(id);
+      const updated = await db.updateMenuItem(id, updates);
       
       return sendJson(res, 200, {
         ...updated,
         createdAt: updated.created_at * 1000,
         updatedAt: updated.updated_at * 1000,
-        available: updated.available === 1,
+        available: updated.available !== undefined ? updated.available : true,
       });
     }
 
@@ -175,12 +124,12 @@ module.exports = async (req, res) => {
       const id = url.searchParams.get("id");
       if (!id) return sendJson(res, 400, { error: "id query parameter is required" });
 
-      const existing = db.prepare("SELECT * FROM menu WHERE id = ?").get(id);
+      const existing = await db.getMenuItem(id);
       if (!existing) {
         return sendJson(res, 404, { error: "Menu item not found" });
       }
 
-      db.prepare("DELETE FROM menu WHERE id = ?").run(id);
+      await db.deleteMenuItem(id);
       res.statusCode = 204;
       return res.end();
     }

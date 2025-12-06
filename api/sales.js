@@ -10,118 +10,150 @@ module.exports = async (req, res) => {
   const { method } = req;
 
   try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    // Check if this is the analytics endpoint
+    const isAnalytics = req.url && (req.url.includes("/analytics") || req.url.includes("analytics"));
     
-    // Analytics endpoint
-    if (method === "GET" && url.pathname.includes("/analytics")) {
-      const period = url.searchParams.get("period") || "30"; // days
+    if (method === "GET" && isAnalytics) {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const period = parseInt(url.searchParams.get("period") || "30"); // days
       
-      const startDate = Math.floor((Date.now() - (parseInt(period) * 24 * 60 * 60 * 1000)) / 1000);
+      const startDate = Math.floor((Date.now() - (period * 24 * 60 * 60 * 1000)) / 1000);
       
-      // Total revenue
-      const totalRevenue = db.prepare(`
-        SELECT SUM(total) as total FROM sales WHERE created_at >= ?
-      `).get(startDate);
+      let sales = await db.getSales();
       
-      // Total orders
-      const totalOrders = db.prepare(`
-        SELECT COUNT(DISTINCT order_id) as count FROM sales WHERE created_at >= ?
-      `).get(startDate);
+      // Filter by date
+      sales = sales.filter(s => s.created_at >= startDate);
+      
+      // Calculate totals
+      const totalRevenue = sales.reduce((sum, s) => sum + (s.total || 0), 0);
+      const uniqueOrders = new Set(sales.map(s => s.order_id).filter(Boolean));
+      const totalOrders = uniqueOrders.size;
       
       // Top items
-      const topItems = db.prepare(`
-        SELECT item_name, SUM(quantity) as quantity, SUM(total) as revenue
-        FROM sales
-        WHERE created_at >= ?
-        GROUP BY item_id, item_name
-        ORDER BY revenue DESC
-        LIMIT 10
-      `).all(startDate);
+      const itemMap = new Map();
+      sales.forEach(sale => {
+        const key = sale.item_id || sale.item_name;
+        if (!itemMap.has(key)) {
+          itemMap.set(key, { name: sale.item_name, quantity: 0, revenue: 0 });
+        }
+        const item = itemMap.get(key);
+        item.quantity += sale.quantity || 0;
+        item.revenue += sale.total || 0;
+      });
+      
+      const topItems = Array.from(itemMap.values())
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10);
       
       // Daily revenue
-      const dailyRevenue = db.prepare(`
-        SELECT 
-          DATE(datetime(created_at, 'unixepoch')) as date,
-          SUM(total) as revenue,
-          COUNT(*) as transactions
-        FROM sales
-        WHERE created_at >= ?
-        GROUP BY date
-        ORDER BY date DESC
-      `).all(startDate);
+      const dailyMap = new Map();
+      sales.forEach(sale => {
+        const date = new Date(sale.created_at * 1000).toISOString().split('T')[0];
+        if (!dailyMap.has(date)) {
+          dailyMap.set(date, { date, revenue: 0, transactions: 0 });
+        }
+        const day = dailyMap.get(date);
+        day.revenue += sale.total || 0;
+        day.transactions += 1;
+      });
+      
+      const dailyRevenue = Array.from(dailyMap.values())
+        .sort((a, b) => b.date.localeCompare(a.date));
       
       return sendJson(res, 200, {
-        period: parseInt(period),
-        totalRevenue: totalRevenue?.total || 0,
-        totalOrders: totalOrders?.count || 0,
-        topItems: topItems.map(item => ({
-          name: item.item_name,
-          quantity: item.quantity,
-          revenue: item.revenue,
-        })),
-        dailyRevenue: dailyRevenue.map(day => ({
-          date: day.date,
-          revenue: day.revenue,
-          transactions: day.transactions,
-        })),
+        period,
+        totalRevenue,
+        totalOrders,
+        topItems,
+        dailyRevenue,
       });
     }
     
     if (method === "GET") {
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const startDate = url.searchParams.get("startDate");
       const endDate = url.searchParams.get("endDate");
-      const groupBy = url.searchParams.get("groupBy"); // 'day', 'item', 'category'
+      const groupBy = url.searchParams.get("groupBy"); // 'day', 'item'
       
-      let query = "SELECT * FROM sales";
-      const params = [];
+      let sales = await db.getSales();
       
+      // Filter by date range
       if (startDate) {
-        query += " WHERE created_at >= ?";
-        params.push(Math.floor(new Date(startDate).getTime() / 1000));
+        const start = Math.floor(new Date(startDate).getTime() / 1000);
+        sales = sales.filter(s => s.created_at >= start);
       }
       
       if (endDate) {
-        query += startDate ? " AND created_at <= ?" : " WHERE created_at <= ?";
-        params.push(Math.floor(new Date(endDate).getTime() / 1000));
+        const end = Math.floor(new Date(endDate).getTime() / 1000);
+        sales = sales.filter(s => s.created_at <= end);
       }
       
+      // Group by
       if (groupBy === "item") {
-        query = `
-          SELECT 
-            item_id,
-            item_name,
-            SUM(quantity) as total_quantity,
-            SUM(total) as total_revenue,
-            COUNT(*) as order_count
-          FROM sales
-          ${params.length > 0 ? "WHERE " + (startDate ? "created_at >= ? AND created_at <= ?" : "created_at <= ?") : ""}
-          GROUP BY item_id, item_name
-          ORDER BY total_revenue DESC
-        `;
+        const itemMap = new Map();
+        sales.forEach(sale => {
+          const key = sale.item_id || sale.item_name;
+          if (!itemMap.has(key)) {
+            itemMap.set(key, {
+              item_id: sale.item_id,
+              item_name: sale.item_name,
+              total_quantity: 0,
+              total_revenue: 0,
+              order_count: 0,
+            });
+          }
+          const item = itemMap.get(key);
+          item.total_quantity += sale.quantity || 0;
+          item.total_revenue += sale.total || 0;
+          item.order_count += 1;
+        });
+        
+        const formatted = Array.from(itemMap.values())
+          .sort((a, b) => b.total_revenue - a.total_revenue);
+        
+        return sendJson(res, 200, formatted.map(item => ({
+          ...item,
+          createdAt: null,
+          totalRevenue: item.total_revenue,
+          totalQuantity: item.total_quantity,
+        })));
       } else if (groupBy === "day") {
-        query = `
-          SELECT 
-            DATE(datetime(created_at, 'unixepoch')) as date,
-            SUM(total) as total_revenue,
-            SUM(quantity) as total_quantity,
-            COUNT(*) as order_count
-          FROM sales
-          ${params.length > 0 ? "WHERE " + (startDate ? "created_at >= ? AND created_at <= ?" : "created_at <= ?") : ""}
-          GROUP BY date
-          ORDER BY date DESC
-        `;
-      } else {
-        query += " ORDER BY created_at DESC";
+        const dayMap = new Map();
+        sales.forEach(sale => {
+          const date = new Date(sale.created_at * 1000).toISOString().split('T')[0];
+          if (!dayMap.has(date)) {
+            dayMap.set(date, {
+              date,
+              total_revenue: 0,
+              total_quantity: 0,
+              order_count: 0,
+            });
+          }
+          const day = dayMap.get(date);
+          day.total_revenue += sale.total || 0;
+          day.total_quantity += sale.quantity || 0;
+          day.order_count += 1;
+        });
+        
+        const formatted = Array.from(dayMap.values())
+          .sort((a, b) => b.date.localeCompare(a.date));
+        
+        return sendJson(res, 200, formatted.map(day => ({
+          ...day,
+          createdAt: null,
+          totalRevenue: day.total_revenue,
+          totalQuantity: day.total_quantity,
+        })));
       }
       
-      const sales = db.prepare(query).all(...params);
+      // Default: return all sales
+      sales.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       
-      // Convert timestamps
       const formatted = sales.map(sale => ({
         ...sale,
         createdAt: sale.created_at ? sale.created_at * 1000 : null,
-        totalRevenue: sale.total_revenue || sale.total || 0,
-        totalQuantity: sale.total_quantity || sale.quantity || 0,
+        totalRevenue: sale.total || 0,
+        totalQuantity: sale.quantity || 0,
       }));
       
       return sendJson(res, 200, formatted);

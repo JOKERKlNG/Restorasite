@@ -31,47 +31,39 @@ module.exports = async (req, res) => {
       const userEmail = url.searchParams.get("userEmail");
       const status = url.searchParams.get("status");
       
-      let query = "SELECT o.* FROM orders o";
-      const params = [];
-      const conditions = [];
+      let orders = await db.getOrders();
       
+      // Filter by userId or userEmail
       if (userId || userEmail) {
         if (userEmail) {
           // Look up user by email first
-          const user = db.prepare("SELECT id FROM users WHERE email = ?").get(userEmail);
+          const user = await db.getUserByEmail(userEmail);
           if (user) {
-            conditions.push("o.user_id = ?");
-            params.push(user.id);
+            orders = orders.filter(o => o.user_id === user.id);
           } else {
             // User not found, return empty array
             return sendJson(res, 200, []);
           }
         } else {
-          conditions.push("o.user_id = ?");
-          params.push(userId);
+          orders = orders.filter(o => o.user_id === userId);
         }
       }
       
+      // Filter by status
       if (status) {
-        conditions.push("o.status = ?");
-        params.push(status);
+        orders = orders.filter(o => o.status === status);
       }
       
-      if (conditions.length > 0) {
-        query += " WHERE " + conditions.join(" AND ");
-      }
-      
-      query += " ORDER BY o.created_at DESC";
-      
-      const orders = db.prepare(query).all(...params);
+      // Sort by created_at descending
+      orders.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       
       // Parse items JSON and convert timestamps
       const formatted = orders.map(order => ({
         ...order,
         userId: order.user_id,
-        items: JSON.parse(order.items || "[]"),
-        createdAt: order.created_at * 1000,
-        updatedAt: order.updated_at * 1000,
+        items: typeof order.items === 'string' ? JSON.parse(order.items) : order.items,
+        createdAt: order.created_at ? order.created_at * 1000 : Date.now(),
+        updatedAt: order.updated_at ? order.updated_at * 1000 : Date.now(),
       }));
       
       return sendJson(res, 200, formatted);
@@ -96,66 +88,50 @@ module.exports = async (req, res) => {
       const orderId = createId();
       const now = Math.floor(Date.now() / 1000);
 
-      try {
-        // If userId is an email, look up the actual user ID
-        let actualUserId = userId;
-        if (userId && userId.includes("@")) {
-          const user = db.prepare("SELECT id FROM users WHERE email = ?").get(userId);
-          actualUserId = user ? user.id : null;
-        }
-        
-        // Create order
-        db.prepare(`
-          INSERT INTO orders (id, user_id, items, subtotal, tax, total, status, payment_method, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
-        `).run(
-          orderId,
-          actualUserId || null,
-          JSON.stringify(items),
-          subtotal,
-          tax || 0,
-          total,
-          paymentMethod || null,
-          now,
-          now
-        );
-
-        // Create sales records for analytics
-        const insertSale = db.prepare(`
-          INSERT INTO sales (id, order_id, item_id, item_name, quantity, price, total, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-
-        const insertSales = db.transaction((orderItems) => {
-          for (const item of orderItems) {
-            insertSale.run(
-              createId(),
-              orderId,
-              item.id || null,
-              item.name || "Unknown",
-              item.qty || 1,
-              item.price || 0,
-              (item.price || 0) * (item.qty || 1),
-              now
-            );
-          }
-        });
-
-        insertSales(items);
-
-        const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(orderId);
-        
-        return sendJson(res, 201, {
-          ...order,
-          userId: order.user_id,
-          items: JSON.parse(order.items || "[]"),
-          createdAt: order.created_at * 1000,
-          updatedAt: order.updated_at * 1000,
-        });
-      } catch (dbError) {
-        console.error("Database error creating order:", dbError);
-        throw dbError;
+      // If userId is an email, look up the actual user ID
+      let actualUserId = userId;
+      if (userId && userId.includes("@")) {
+        const user = await db.getUserByEmail(userId);
+        actualUserId = user ? user.id : null;
       }
+
+      // Create order
+      const order = {
+        id: orderId,
+        user_id: actualUserId || null,
+        items: JSON.stringify(items),
+        subtotal,
+        tax: tax || 0,
+        total,
+        status: "pending",
+        payment_method: paymentMethod || null,
+        created_at: now,
+        updated_at: now,
+      };
+
+      await db.createOrder(order);
+
+      // Create sales records for analytics
+      const sales = items.map(item => ({
+        id: createId(),
+        order_id: orderId,
+        item_id: item.id || null,
+        item_name: item.name || "Unknown",
+        quantity: item.qty || 1,
+        price: item.price || 0,
+        total: (item.price || 0) * (item.qty || 1),
+        created_at: now,
+      }));
+
+      await db.createSales(sales);
+      
+      return sendJson(res, 201, {
+        ...order,
+        userId: order.user_id,
+        items: typeof order.items === 'string' ? JSON.parse(order.items) : order.items,
+        createdAt: order.created_at * 1000,
+        updatedAt: order.updated_at * 1000,
+      });
     }
 
     if (method === "PATCH") {
@@ -163,34 +139,22 @@ module.exports = async (req, res) => {
       const id = url.searchParams.get("id");
       if (!id) return sendJson(res, 400, { error: "id query parameter is required" });
 
-      const existing = db.prepare("SELECT * FROM orders WHERE id = ?").get(id);
+      const existing = await db.getOrder(id);
       if (!existing) {
         return sendJson(res, 404, { error: "Order not found" });
       }
 
       const payload = await parseBody(req);
-      const updates = [];
-      const params = [];
+      const updates = {};
       
-      if (payload.status !== undefined) {
-        updates.push("status = ?");
-        params.push(payload.status);
-      }
+      if (payload.status !== undefined) updates.status = payload.status;
       
-      if (updates.length > 0) {
-        updates.push("updated_at = ?");
-        params.push(Math.floor(Date.now() / 1000));
-        params.push(id);
-        
-        db.prepare(`UPDATE orders SET ${updates.join(", ")} WHERE id = ?`).run(...params);
-      }
-
-      const updated = db.prepare("SELECT * FROM orders WHERE id = ?").get(id);
+      const updated = await db.updateOrder(id, updates);
       
       return sendJson(res, 200, {
         ...updated,
         userId: updated.user_id,
-        items: JSON.parse(updated.items || "[]"),
+        items: typeof updated.items === 'string' ? JSON.parse(updated.items) : updated.items,
         createdAt: updated.created_at * 1000,
         updatedAt: updated.updated_at * 1000,
       });
@@ -204,4 +168,3 @@ module.exports = async (req, res) => {
     return sendJson(res, 500, { error: error.message || "Internal server error" });
   }
 };
-

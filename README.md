@@ -20,8 +20,8 @@ A modern restaurant website with full database integration, featuring menu manag
 
 - **Frontend**: HTML, CSS, JavaScript (Vanilla)
 - **Backend**: Node.js with HTTP server
-- **Database**: SQLite (better-sqlite3)
-- **Storage**: SQLite database file (persists data)
+- **Database**: File-based JSON storage (Vercel-compatible, no native compilation)
+- **Storage**: JSON file in `/tmp` directory (Vercel) or `data/` directory (local)
 
 ## Installation
 
@@ -55,18 +55,21 @@ A modern restaurant website with full database integration, featuring menu manag
 
 ## Database
 
-The database is automatically initialized on first run. The database file is stored in:
-- **Local development**: `data/restora.db`
-- **Serverless (Vercel)**: `/tmp/restora.db`
+The database uses file-based JSON storage (no native compilation required, works perfectly on Vercel). The database file is stored in:
+- **Local development**: `data/restora.json`
+- **Serverless (Vercel)**: `/tmp/restora.json`
 
-### Database Schema
+### Database Structure
 
+The database is a single JSON file containing:
 - **users**: User accounts and authentication
 - **menu**: Menu items with categories
 - **reservations**: Table reservations
 - **reviews**: Customer reviews and ratings
 - **orders**: Order history
 - **sales**: Sales transactions for analytics
+
+All data is automatically initialized on first run with default menu items and admin user.
 
 ## API Endpoints
 
@@ -240,9 +243,9 @@ No environment variables are required for basic setup.
 ### Database Errors
 
 If you encounter database errors:
-1. Make sure `better-sqlite3` is installed: `npm install`
-2. Check that the `data/` directory exists and is writable
-3. Delete `data/restora.db` and restart to recreate the database
+1. Check that the `data/` directory exists and is writable (local) or `/tmp` is accessible (Vercel)
+2. Delete `data/restora.json` and restart to recreate the database
+3. On Vercel, the database file in `/tmp` is ephemeral (resets on deployment)
 
 ### API Not Working
 

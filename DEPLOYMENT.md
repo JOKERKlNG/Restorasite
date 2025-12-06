@@ -37,8 +37,9 @@ This project is ready for direct deployment to Vercel.
 
 ⚠️ **Important**: On Vercel, the `/tmp` directory is **ephemeral**. This means:
 - Database data will be **reset** on each deployment
-- Database data may be **lost** between function invocations (though it persists during the same deployment)
-- For production use, consider migrating to:
+- Database data persists during the same deployment but resets on redeploy
+- The database uses JSON file storage (no native compilation needed - works perfectly on Vercel)
+- For production use with persistent data, consider migrating to:
   - **Vercel Postgres** (recommended)
   - **PlanetScale** (MySQL)
   - **Supabase** (PostgreSQL)
@@ -81,8 +82,8 @@ The project uses `vercel.json` for configuration:
 
 If you see database errors:
 - Check Vercel function logs
-- Ensure `better-sqlite3` is in dependencies
-- Verify database path is `/tmp/restora.db` on Vercel
+- Verify database path is `/tmp/restora.json` on Vercel
+- Ensure file system is writable (should work automatically on Vercel)
 
 ### API Not Working
 

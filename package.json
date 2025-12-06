@@ -6,9 +6,7 @@
     "start": "node server.js",
     "dev": "node server.js"
   },
-  "dependencies": {
-    "better-sqlite3": "^9.2.2"
-  },
+  "dependencies": {},
   "devDependencies": {},
   "engines": {
     "node": ">=18.x"

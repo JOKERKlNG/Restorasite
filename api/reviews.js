@@ -29,17 +29,15 @@ module.exports = async (req, res) => {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const itemId = url.searchParams.get("itemId");
       
-      let query = "SELECT * FROM reviews";
-      const params = [];
+      let reviews = await db.getReviews();
       
+      // Filter by itemId
       if (itemId) {
-        query += " WHERE item_id = ?";
-        params.push(itemId);
+        reviews = reviews.filter(r => r.item_id === itemId);
       }
       
-      query += " ORDER BY created_at DESC";
-      
-      const reviews = db.prepare(query).all(...params);
+      // Sort by created_at descending
+      reviews.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       
       // Convert timestamps
       const formatted = reviews.map(r => ({
@@ -47,9 +45,9 @@ module.exports = async (req, res) => {
         itemId: r.item_id,
         itemName: r.item_name,
         reviewerName: r.reviewer_name,
-        timestamp: r.created_at * 1000,
-        createdAt: r.created_at * 1000,
-        updatedAt: r.updated_at * 1000,
+        timestamp: r.created_at ? r.created_at * 1000 : Date.now(),
+        createdAt: r.created_at ? r.created_at * 1000 : Date.now(),
+        updatedAt: r.updated_at ? r.updated_at * 1000 : Date.now(),
       }));
       
       return sendJson(res, 200, formatted);
@@ -72,44 +70,35 @@ module.exports = async (req, res) => {
       }
 
       // Get item name
-      const item = db.prepare("SELECT name FROM menu WHERE id = ?").get(itemId);
+      const item = await db.getMenuItem(itemId);
       const itemName = item?.name || "Unknown";
 
       const reviewId = id || createId();
       const now = Math.floor(Date.now() / 1000);
 
-      try {
-        db.prepare(`
-          INSERT INTO reviews (id, item_id, item_name, rating, reviewer_name, text, user_id, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
-        `).run(
-          reviewId,
-          itemId,
-          itemName,
-          Number(rating),
-          reviewerName,
-          text,
-          now,
-          now
-        );
+      const review = {
+        id: reviewId,
+        item_id: itemId,
+        item_name: itemName,
+        rating: Number(rating),
+        reviewer_name: reviewerName,
+        text,
+        user_id: null,
+        created_at: now,
+        updated_at: now,
+      };
 
-        const review = db.prepare("SELECT * FROM reviews WHERE id = ?").get(reviewId);
-        
-        return sendJson(res, 201, {
-          ...review,
-          itemId: review.item_id,
-          itemName: review.item_name,
-          reviewerName: review.reviewer_name,
-          timestamp: review.created_at * 1000,
-          createdAt: review.created_at * 1000,
-          updatedAt: review.updated_at * 1000,
-        });
-      } catch (dbError) {
-        if (dbError.code === 'SQLITE_CONSTRAINT') {
-          return sendJson(res, 409, { error: "Review already exists" });
-        }
-        throw dbError;
-      }
+      await db.createReview(review);
+      
+      return sendJson(res, 201, {
+        ...review,
+        itemId: review.item_id,
+        itemName: review.item_name,
+        reviewerName: review.reviewer_name,
+        timestamp: review.created_at * 1000,
+        createdAt: review.created_at * 1000,
+        updatedAt: review.updated_at * 1000,
+      });
     }
 
     if (method === "DELETE") {
@@ -117,12 +106,12 @@ module.exports = async (req, res) => {
       const id = url.searchParams.get("id");
       if (!id) return sendJson(res, 400, { error: "id query parameter is required" });
 
-      const existing = db.prepare("SELECT * FROM reviews WHERE id = ?").get(id);
+      const existing = await db.getReview(id);
       if (!existing) {
         return sendJson(res, 404, { error: "Review not found" });
       }
 
-      db.prepare("DELETE FROM reviews WHERE id = ?").run(id);
+      await db.deleteReview(id);
       res.statusCode = 204;
       return res.end();
     }

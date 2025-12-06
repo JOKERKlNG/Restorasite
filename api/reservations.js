@@ -30,28 +30,26 @@ module.exports = async (req, res) => {
       const status = url.searchParams.get("status");
       const date = url.searchParams.get("date");
       
-      let query = "SELECT * FROM reservations";
-      const params = [];
+      let reservations = await db.getReservations();
       
+      // Filter by status
       if (status) {
-        query += " WHERE status = ?";
-        params.push(status);
+        reservations = reservations.filter(r => r.status === status);
       }
       
+      // Filter by date
       if (date) {
-        query += status ? " AND date = ?" : " WHERE date = ?";
-        params.push(date);
+        reservations = reservations.filter(r => r.date === date);
       }
       
-      query += " ORDER BY created_at DESC";
+      // Sort by created_at descending
+      reservations.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       
-      const reservations = db.prepare(query).all(...params);
-      
-      // Convert timestamps to numbers for compatibility
+      // Convert timestamps
       const formatted = reservations.map(r => ({
         ...r,
-        createdAt: r.created_at * 1000,
-        updatedAt: r.updated_at * 1000,
+        createdAt: r.created_at ? r.created_at * 1000 : Date.now(),
+        updatedAt: r.updated_at ? r.updated_at * 1000 : Date.now(),
         requests: r.notes || "",
         userEmail: r.email || null,
       }));
@@ -81,44 +79,41 @@ module.exports = async (req, res) => {
       const reservationId = id || createId();
       const now = Math.floor(Date.now() / 1000);
 
-      try {
-        db.prepare(`
-          INSERT INTO reservations (id, name, phone, email, date, time, guests, notes, status, user_id, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
-        `).run(
-          reservationId,
-          name,
-          phone,
-          userEmail || null,
-          date,
-          time,
-          Number(guests),
-          notes || "",
-          now,
-          now
-        );
+      const reservation = {
+        id: reservationId,
+        name,
+        phone,
+        email: userEmail || null,
+        date,
+        time,
+        guests: Number(guests),
+        notes: notes || "",
+        status: "pending",
+        user_id: null,
+        created_at: now,
+        updated_at: now,
+      };
 
-        const reservation = db.prepare("SELECT * FROM reservations WHERE id = ?").get(reservationId);
-        
-        return sendJson(res, 201, {
-          ...reservation,
-          createdAt: reservation.created_at * 1000,
-          updatedAt: reservation.updated_at * 1000,
-          requests: reservation.notes || "",
-          userEmail: reservation.email || null,
-        });
-      } catch (dbError) {
-        if (dbError.code === 'SQLITE_CONSTRAINT') {
-          return sendJson(res, 409, { error: "Reservation already exists" });
-        }
-        throw dbError;
-      }
+      await db.createReservation(reservation);
+      
+      return sendJson(res, 201, {
+        ...reservation,
+        createdAt: reservation.created_at * 1000,
+        updatedAt: reservation.updated_at * 1000,
+        requests: reservation.notes || "",
+        userEmail: reservation.email || null,
+      });
     }
 
     if (method === "PATCH") {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const id = url.searchParams.get("id");
       if (!id) return sendJson(res, 400, { error: "id query parameter is required" });
+
+      const existing = await db.getReservation(id);
+      if (!existing) {
+        return sendJson(res, 404, { error: "Reservation not found" });
+      }
 
       const payload = await parseBody(req);
       const { status } = payload;
@@ -129,28 +124,10 @@ module.exports = async (req, res) => {
         });
       }
 
-      const existing = db.prepare("SELECT * FROM reservations WHERE id = ?").get(id);
-      if (!existing) {
-        return sendJson(res, 404, { error: "Reservation not found" });
-      }
+      const updates = {};
+      if (status) updates.status = status;
 
-      const updates = [];
-      const params = [];
-      
-      if (status) {
-        updates.push("status = ?");
-        params.push(status);
-      }
-      
-      if (updates.length > 0) {
-        updates.push("updated_at = ?");
-        params.push(Math.floor(Date.now() / 1000));
-        params.push(id);
-        
-        db.prepare(`UPDATE reservations SET ${updates.join(", ")} WHERE id = ?`).run(...params);
-      }
-
-      const updated = db.prepare("SELECT * FROM reservations WHERE id = ?").get(id);
+      const updated = await db.updateReservation(id, updates);
       
       return sendJson(res, 200, {
         ...updated,
@@ -166,14 +143,17 @@ module.exports = async (req, res) => {
       const id = url.searchParams.get("id");
 
       if (id) {
-        const existing = db.prepare("SELECT * FROM reservations WHERE id = ?").get(id);
+        const existing = await db.getReservation(id);
         if (!existing) {
           return sendJson(res, 404, { error: "Reservation not found" });
         }
-        db.prepare("DELETE FROM reservations WHERE id = ?").run(id);
+        await db.deleteReservation(id);
       } else {
-        // Clear all reservations (admin only - you might want to add auth check)
-        db.prepare("DELETE FROM reservations").run();
+        // Clear all reservations (admin only)
+        const reservations = await db.getReservations();
+        for (const res of reservations) {
+          await db.deleteReservation(res.id);
+        }
       }
 
       res.statusCode = 204;

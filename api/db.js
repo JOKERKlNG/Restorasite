@@ -1,170 +1,291 @@
-// Database connection and initialization using SQLite
-const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
+// File-based database for Vercel compatibility
+// Uses JSON files instead of SQLite (no native compilation needed)
 
-// Database file location
+const fs = require('fs').promises;
+const path = require('path');
+
+// Database directory (use /tmp for Vercel, or data/ for local)
 const DB_DIR = process.env.VERCEL ? '/tmp' : path.join(__dirname, '..', 'data');
-const DB_PATH = path.join(DB_DIR, 'restora.db');
+const DB_PATH = path.join(DB_DIR, 'restora.json');
 
 // Ensure directory exists
-try {
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true });
-  }
-} catch (err) {
-  console.warn('Could not create database directory:', err);
-}
-
-// Initialize database connection (singleton pattern for serverless)
-let db;
-function getDatabase() {
-  if (!db) {
-    try {
-      db = new Database(DB_PATH);
-      db.pragma('journal_mode = WAL'); // Enable Write-Ahead Logging for better concurrency
-      // Initialize schema on first connection
-      initializeDatabase();
-    } catch (error) {
-      console.error('Failed to connect to database:', error);
-      throw error;
+async function ensureDir() {
+  try {
+    await fs.mkdir(DB_DIR, { recursive: true });
+  } catch (err) {
+    if (err.code !== 'EEXIST') {
+      console.warn('Could not create database directory:', err);
     }
   }
-  return db;
 }
 
-// Initialize database schema
-function initializeDatabase() {
-  // Users table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      name TEXT NOT NULL,
-      role TEXT DEFAULT 'user',
-      avatar_url TEXT,
-      favorites TEXT, -- JSON array of favorite menu item IDs
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
-    )
-  `);
-
-  // Menu items table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS menu (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      price REAL NOT NULL,
-      image TEXT,
-      category TEXT DEFAULT 'Specials',
-      description TEXT,
-      available INTEGER DEFAULT 1,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
-    )
-  `);
-
-  // Reservations table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS reservations (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      phone TEXT NOT NULL,
-      email TEXT,
-      date TEXT NOT NULL,
-      time TEXT NOT NULL,
-      guests INTEGER NOT NULL,
-      notes TEXT,
-      status TEXT DEFAULT 'pending',
-      user_id TEXT,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-      FOREIGN KEY (user_id) REFERENCES users(id)
-    )
-  `);
-
-  // Reviews table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS reviews (
-      id TEXT PRIMARY KEY,
-      item_id TEXT NOT NULL,
-      item_name TEXT NOT NULL,
-      rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-      reviewer_name TEXT NOT NULL,
-      text TEXT NOT NULL,
-      user_id TEXT,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-      FOREIGN KEY (item_id) REFERENCES menu(id),
-      FOREIGN KEY (user_id) REFERENCES users(id)
-    )
-  `);
-
-  // Orders table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS orders (
-      id TEXT PRIMARY KEY,
-      user_id TEXT,
-      items TEXT NOT NULL, -- JSON array of ordered items
-      subtotal REAL NOT NULL,
-      tax REAL NOT NULL,
-      total REAL NOT NULL,
-      status TEXT DEFAULT 'pending',
-      payment_method TEXT,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-      FOREIGN KEY (user_id) REFERENCES users(id)
-    )
-  `);
-
-  // Sales/Transactions table (for analytics)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sales (
-      id TEXT PRIMARY KEY,
-      order_id TEXT,
-      item_id TEXT,
-      item_name TEXT NOT NULL,
-      quantity INTEGER NOT NULL,
-      price REAL NOT NULL,
-      total REAL NOT NULL,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      FOREIGN KEY (order_id) REFERENCES orders(id),
-      FOREIGN KEY (item_id) REFERENCES menu(id)
-    )
-  `);
-
-  // Create indexes for better performance
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_reservations_date ON reservations(date);
-    CREATE INDEX IF NOT EXISTS idx_reservations_status ON reservations(status);
-    CREATE INDEX IF NOT EXISTS idx_reviews_item_id ON reviews(item_id);
-    CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
-    CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-    CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
-  `);
-
-  // Insert default admin user if not exists
-  const adminExists = db.prepare('SELECT id FROM users WHERE email = ?').get('admin@gmail.com');
-  if (!adminExists) {
-    const createId = () => `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    db.prepare(`
-      INSERT INTO users (id, email, password, name, role)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(createId(), 'admin@gmail.com', '12345678', 'Admin', 'admin');
+// Load database from file
+async function loadDB() {
+  try {
+    await ensureDir();
+    const data = await fs.readFile(DB_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      // File doesn't exist, return default structure
+      return {
+        users: [],
+        menu: [],
+        reservations: [],
+        reviews: [],
+        orders: [],
+        sales: []
+      };
+    }
+    console.error('Error loading database:', err);
+    return {
+      users: [],
+      menu: [],
+      reservations: [],
+      reviews: [],
+      orders: [],
+      sales: []
+    };
   }
+}
 
-  // Insert default menu items if menu is empty
-  const menuCount = db.prepare('SELECT COUNT(*) as count FROM menu').get();
-  if (menuCount.count === 0) {
-    const createId = () => `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const defaultMenu = [
+// Save database to file
+async function saveDB(data) {
+  try {
+    await ensureDir();
+    await fs.writeFile(DB_PATH, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    console.error('Error saving database:', err);
+    return false;
+  }
+}
+
+// Database operations
+const db = {
+  // Users
+  async getUsers() {
+    const data = await loadDB();
+    return data.users || [];
+  },
+  
+  async getUserByEmail(email) {
+    const users = await this.getUsers();
+    return users.find(u => u.email === email) || null;
+  },
+  
+  async createUser(user) {
+    const data = await loadDB();
+    if (!data.users) data.users = [];
+    data.users.push(user);
+    await saveDB(data);
+    return user;
+  },
+  
+  async updateUser(id, updates) {
+    const data = await loadDB();
+    if (!data.users) data.users = [];
+    const index = data.users.findIndex(u => u.id === id);
+    if (index === -1) return null;
+    data.users[index] = { ...data.users[index], ...updates, updated_at: Math.floor(Date.now() / 1000) };
+    await saveDB(data);
+    return data.users[index];
+  },
+  
+  // Menu
+  async getMenu() {
+    const data = await loadDB();
+    return data.menu || [];
+  },
+  
+  async getMenuItem(id) {
+    const menu = await this.getMenu();
+    return menu.find(m => m.id === id) || null;
+  },
+  
+  async createMenuItem(item) {
+    const data = await loadDB();
+    if (!data.menu) data.menu = [];
+    data.menu.push(item);
+    await saveDB(data);
+    return item;
+  },
+  
+  async updateMenuItem(id, updates) {
+    const data = await loadDB();
+    if (!data.menu) data.menu = [];
+    const index = data.menu.findIndex(m => m.id === id);
+    if (index === -1) return null;
+    data.menu[index] = { ...data.menu[index], ...updates, updated_at: Math.floor(Date.now() / 1000) };
+    await saveDB(data);
+    return data.menu[index];
+  },
+  
+  async deleteMenuItem(id) {
+    const data = await loadDB();
+    if (!data.menu) data.menu = [];
+    data.menu = data.menu.filter(m => m.id !== id);
+    await saveDB(data);
+    return true;
+  },
+  
+  // Reservations
+  async getReservations() {
+    const data = await loadDB();
+    return data.reservations || [];
+  },
+  
+  async getReservation(id) {
+    const reservations = await this.getReservations();
+    return reservations.find(r => r.id === id) || null;
+  },
+  
+  async createReservation(reservation) {
+    const data = await loadDB();
+    if (!data.reservations) data.reservations = [];
+    data.reservations.push(reservation);
+    await saveDB(data);
+    return reservation;
+  },
+  
+  async updateReservation(id, updates) {
+    const data = await loadDB();
+    if (!data.reservations) data.reservations = [];
+    const index = data.reservations.findIndex(r => r.id === id);
+    if (index === -1) return null;
+    data.reservations[index] = { ...data.reservations[index], ...updates, updated_at: Math.floor(Date.now() / 1000) };
+    await saveDB(data);
+    return data.reservations[index];
+  },
+  
+  async deleteReservation(id) {
+    const data = await loadDB();
+    if (!data.reservations) data.reservations = [];
+    data.reservations = data.reservations.filter(r => r.id !== id);
+    await saveDB(data);
+    return true;
+  },
+  
+  // Reviews
+  async getReviews() {
+    const data = await loadDB();
+    return data.reviews || [];
+  },
+  
+  async getReview(id) {
+    const reviews = await this.getReviews();
+    return reviews.find(r => r.id === id) || null;
+  },
+  
+  async createReview(review) {
+    const data = await loadDB();
+    if (!data.reviews) data.reviews = [];
+    data.reviews.push(review);
+    await saveDB(data);
+    return review;
+  },
+  
+  async deleteReview(id) {
+    const data = await loadDB();
+    if (!data.reviews) data.reviews = [];
+    data.reviews = data.reviews.filter(r => r.id !== id);
+    await saveDB(data);
+    return true;
+  },
+  
+  // Orders
+  async getOrders() {
+    const data = await loadDB();
+    return data.orders || [];
+  },
+  
+  async getOrder(id) {
+    const orders = await this.getOrders();
+    return orders.find(o => o.id === id) || null;
+  },
+  
+  async createOrder(order) {
+    const data = await loadDB();
+    if (!data.orders) data.orders = [];
+    data.orders.push(order);
+    await saveDB(data);
+    return order;
+  },
+  
+  async updateOrder(id, updates) {
+    const data = await loadDB();
+    if (!data.orders) data.orders = [];
+    const index = data.orders.findIndex(o => o.id === id);
+    if (index === -1) return null;
+    data.orders[index] = { ...data.orders[index], ...updates, updated_at: Math.floor(Date.now() / 1000) };
+    await saveDB(data);
+    return data.orders[index];
+  },
+  
+  // Sales
+  async getSales() {
+    const data = await loadDB();
+    return data.sales || [];
+  },
+  
+  async createSale(sale) {
+    const data = await loadDB();
+    if (!data.sales) data.sales = [];
+    data.sales.push(sale);
+    await saveDB(data);
+    return sale;
+  },
+  
+  async createSales(sales) {
+    const data = await loadDB();
+    if (!data.sales) data.sales = [];
+    data.sales.push(...sales);
+    await saveDB(data);
+    return sales;
+  }
+};
+
+// Initialize database with default data
+async function initializeDatabase() {
+  const data = await loadDB();
+  let needsInit = false;
+  
+  // Initialize users
+  if (!data.users || data.users.length === 0) {
+    data.users = [
+      {
+        id: createId(),
+        email: "123@gmail.com",
+        password: "asdfghjkl",
+        name: "123",
+        role: "user",
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
+      },
+      {
+        id: createId(),
+        email: "admin@gmail.com",
+        password: "12345678",
+        name: "Admin",
+        role: "admin",
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
+      }
+    ];
+    needsInit = true;
+  }
+  
+  // Initialize menu
+  if (!data.menu || data.menu.length === 0) {
+    data.menu = [
       {
         id: createId(),
         name: "Coq au Vin",
         price: 850,
         image: "https://raw.githubusercontent.com/JOKERKlNG/Restora/refs/heads/main/French%20Food%201.png",
         category: "Main Course",
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
       },
       {
         id: createId(),
@@ -172,6 +293,8 @@ function initializeDatabase() {
         price: 1200,
         image: "https://raw.githubusercontent.com/JOKERKlNG/Restora/refs/heads/main/French%20Food%202.png",
         category: "Main Course",
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
       },
       {
         id: createId(),
@@ -179,6 +302,8 @@ function initializeDatabase() {
         price: 650,
         image: "https://raw.githubusercontent.com/JOKERKlNG/Restora/refs/heads/main/French%20Food%203.png",
         category: "Vegetarian",
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
       },
       {
         id: createId(),
@@ -186,6 +311,8 @@ function initializeDatabase() {
         price: 750,
         image: "https://raw.githubusercontent.com/JOKERKlNG/Restora/refs/heads/main/French%20Food%204.png",
         category: "Appetizer",
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
       },
       {
         id: createId(),
@@ -193,6 +320,8 @@ function initializeDatabase() {
         price: 450,
         image: "https://raw.githubusercontent.com/JOKERKlNG/Restora/refs/heads/main/French%20Food%205.png",
         category: "Dessert",
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
       },
       {
         id: createId(),
@@ -200,6 +329,8 @@ function initializeDatabase() {
         price: 420,
         image: "https://raw.githubusercontent.com/JOKERKlNG/Restora/refs/heads/main/French%20Food%206.png",
         category: "Soup",
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
       },
       {
         id: createId(),
@@ -207,34 +338,23 @@ function initializeDatabase() {
         price: 1100,
         image: "https://raw.githubusercontent.com/JOKERKlNG/Restora/refs/heads/main/French%20Food%207.png",
         category: "Main Course",
-      },
-    ];
-
-    const insertMenu = db.prepare(`
-      INSERT INTO menu (id, name, price, image, category)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    const insertMany = db.transaction((items) => {
-      for (const item of items) {
-        insertMenu.run(item.id, item.name, item.price, item.image, item.category);
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000)
       }
-    });
-
-    insertMany(defaultMenu);
+    ];
+    needsInit = true;
   }
-
-  console.log('Database initialized successfully');
-}
-
-// Initialize database on first access (lazy initialization for serverless)
-let initialized = false;
-function ensureInitialized() {
-  if (!initialized) {
-    getDatabase(); // This will call initializeDatabase
-    initialized = true;
+  
+  if (needsInit) {
+    await saveDB(data);
+    console.log('Database initialized successfully');
   }
 }
+
+// Initialize on module load
+initializeDatabase().catch(err => {
+  console.warn('Database initialization warning:', err);
+});
 
 // Helper function to create ID
 function createId() {
@@ -244,11 +364,7 @@ function createId() {
 }
 
 module.exports = {
-  get db() {
-    ensureInitialized();
-    return getDatabase();
-  },
+  db,
   createId,
   initializeDatabase,
 };
-
